@@ -240,14 +240,15 @@ def build_dashboard(lab=None):
 
 
 def launch_dashboard(app, *, share=True, auth=None):
-    import secrets,requests
+    import secrets
+    from urllib.request import build_opener,ProxyHandler
     credentials=auth or ('grid',secrets.token_urlsafe(16))
     try:
         _,local_url,share_url=app.launch(share=share,inline=False,prevent_thread_lock=True,
             auth=credentials,show_error=True,quiet=False,css=CSS,
             theme=gr.themes.Soft(primary_hue='emerald',neutral_hue='slate'))
-        client=requests.Session();client.trust_env=False
-        client.get(local_url,timeout=15).raise_for_status()
+        with build_opener(ProxyHandler({})).open(local_url,timeout=15) as response:
+            if response.status!=200:raise RuntimeError('Dashboard health check failed.')
         if share and not share_url:raise RuntimeError('No Gradio share URL was returned. Reconnect Colab and rerun launch.')
         return share_url if share else local_url,credentials
     except Exception:app.close();raise
