@@ -9,6 +9,7 @@ from grid_lab import GridLab,PRESETS
 from dashboard import ScenarioExperiment,oltc_score,update_configuration
 from live_control import prepare_controller,net_bus_pq,voltage_violation
 from active_grid.controller import MAX_P_MW,MAX_Q_MVAR
+from scenarios import apply_layout,has_voltage_valley,feeder_paths
 
 
 def check_live(lab=None):
@@ -20,11 +21,17 @@ def check_live(lab=None):
     first=session.sample(1,1);second=session.sample(2,1)
     assert session.t==first['profile_step']
     assert second['timestamp']==lab.profile_times[session.t]
+    assert first['layout']==second['layout']
+    raw_p=lab.profiles[('load','p_mw')].iloc[session.t].reindex(lab.net.load.index).to_numpy()
+    raw_q=lab.profiles[('load','q_mvar')].iloc[session.t].reindex(lab.net.load.index).to_numpy()
+    assert np.allclose(second['baseline'].load.p_mw,2*raw_p)
+    assert np.allclose(second['baseline'].load.q_mvar,2*raw_q)
     assert np.isclose(second['load_p_kw'],2*first['load_p_kw'])
     assert np.isclose(second['load_q_kvar'],2*first['load_q_kvar'])
     assert not np.allclose(first['y_base'][:lab.nv],second['y_base'][:lab.nv])
     for key in ['oltc','mpc']:
-        assert np.allclose(second['baseline'].load[['p_mw','q_mvar']],second[key].load[['p_mw','q_mvar']])
+        assert np.allclose(second['baseline'].load[['bus','p_mw','q_mvar']],second[key].load[['bus','p_mw','q_mvar']])
+        assert np.array_equal(second['baseline'].sgen.bus,second[key].sgen.bus)
     assert np.allclose(second['baseline'].sgen[['p_mw','q_mvar']],second['oltc'].sgen[['p_mw','q_mvar']])
     assert np.allclose(second['baseline'].sgen.loc[lab.pv_ids,['p_mw','q_mvar']],second['mpc'].sgen.loc[lab.pv_ids,['p_mw','q_mvar']])
     assert second['baseline'].trafo.loc[lab.tid,'tap_pos']==lab.tap0
@@ -60,16 +67,22 @@ def check_live(lab=None):
     for preset in ['High PV','High Load']:
         lf,pf=PRESETS[preset];lab.rating=lab.base_rating*max(1.,pf);net=lab.new_net()
         for t in lab.scenario_buckets[preset]:
-            av=lab.set_profile(net,int(t),lf,pf);lab.control(net,av,np.zeros(2*lab.ng));y=lab.solve(net)
-            if preset=='High PV':assert y[:lab.nv].max()>=lab.cfg.v_max+.02
+            av=lab.set_profile(net,int(t),lf,pf);lab.control(net,av,np.zeros(2*lab.ng))
+            layout=lab.spatial_layouts[preset][int(t)];apply_layout(lab,net,layout);y=lab.solve(net)
+            assert np.ptp(y[:lab.nv])>=.115
+            if preset=='High PV':
+                assert y[:lab.nv].max()>=lab.cfg.v_max+.02
+                assert has_voltage_valley(net,layout['path'])
             else:assert y[:lab.nv].min()<=lab.cfg.v_min-.02
-        before=[];after=[];solver_ok=[]
+        before=[];after=[];oltc_after=[];solver_ok=[]
         bucket=lab.scenario_buckets[preset]
         session.preset=preset
         for t in bucket[np.unique(np.linspace(0,len(bucket)-1,6,dtype=int))]:
-            session.t=int(t);frame=session.sample(1,1,preset=preset)
+            session.t=int(t);session.layout=lab.spatial_layouts[preset][int(t)]
+            frame=session.sample(1,1,preset=preset)
             assert frame['load_factor']==lf and frame['pv_factor']==pf
             before.append(voltage_violation(lab,frame['y_base']));after.append(voltage_violation(lab,frame['y_mpc']))
+            oltc_after.append(voltage_violation(lab,frame['y_oltc']))
             solver_ok.append(frame['flags']['solver_success'])
             assert frame['flags']['optimizer_action_applied']
             assert np.abs(frame['actions']['P (kW)']).max()<=MAX_P_MW*1000+1e-8
@@ -84,7 +97,11 @@ def check_live(lab=None):
             assert np.allclose(actual_p,expected_p,atol=6e-6) and np.allclose(actual_q,expected_q,atol=6e-6)
         assert np.mean(after)<.8*np.mean(before),(preset,before,after)
         assert sum(solver_ok)>=len(solver_ok)*.75,(preset,solver_ok)
-        print(f'{preset}: AC voltage violation {np.mean(before):.5f} -> {np.mean(after):.5f} pu; optimizer {sum(solver_ok)}/{len(solver_ok)} converged: PASS')
+        print(f'{preset}: AC voltage violation uncontrolled {np.mean(before):.5f}, best OLTC {np.mean(oltc_after):.5f}, MPC {np.mean(after):.5f} pu; optimizer {sum(solver_ok)}/{len(solver_ok)} converged: PASS')
+        print('Paired violations:',list(zip(before,oltc_after,after)))
+        if preset=='High PV':
+            assert np.mean(after)<.5*np.mean(oltc_after),(after,oltc_after)
+            assert sum(a<o-1e-3 for a,o in zip(after,oltc_after))>=len(after)//2,(after,oltc_after)
         for _ in range(8):
             session.new_scenario(preset);assert session.t in bucket
     months=set()
@@ -114,6 +131,10 @@ def check_server(lab):
         plot=json.loads(initial[0]['plot'])
         assert [t['name'] for t in plot['data'][:3]]==['Uncontrolled','Best OLTC','MLP + MPC']
         assert len(set(t.get('yaxis','y') for t in plot['data'][:3]))==1
+        paths=feeder_paths(lab)
+        labels=[str(b) for path in paths for b in path]+['']
+        assert set(plot['data'][0]['customdata'])==set(labels)
+        assert plot['data'][0]['y'].count(None)==len(paths)
         scaled=client.predict('Custom',2,1,1,.1,1000,api_name='/react')
         assert initial[1]==scaled[1] and initial[0]!=scaled[0]
         new=client.predict('Custom',2,1,1,.1,1000,api_name='/new_scenario')

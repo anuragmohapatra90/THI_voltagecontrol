@@ -7,7 +7,7 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.model_selection import train_test_split
 import pandapower as pp
 from grid_lab import PRESETS
-from scenarios import prepare_buckets
+from scenarios import prepare_buckets,control_locations,random_layout,apply_layout
 from .mlp_model import VoltageEstimator
 from .controller import MLP_MPC_Controller,net_bus_pq,MAX_P_MW,MAX_Q_MVAR,apply_der_setpoints
 
@@ -17,7 +17,7 @@ def train_controller(lab,samples=3000,test_samples=500):
     torch.set_num_threads(1);torch.manual_seed(lab.cfg.seed)
     buckets=prepare_buckets(lab);rng=np.random.default_rng(lab.cfg.seed)
     bus_ids=lab.net.bus.index.tolist()
-    der_buses=sorted(set(lab.net.sgen.loc[lab.pv_ids,'bus'].astype(int)))
+    der_buses=control_locations(lab)
     xs=[];ys=[];failed=0;original_rating=lab.rating.copy()
     try:
         for i in range(samples+test_samples):
@@ -28,9 +28,11 @@ def train_controller(lab,samples=3000,test_samples=500):
                 mode='High Load';t=int(rng.choice(buckets[mode]));lf,pf=PRESETS[mode]
                 lf=min(lab.cfg.load_scale_max,lf*rng.uniform(.85,1.15));pf*=rng.uniform(.5,1.5)
             else:
-                t=int(rng.integers(lab.steps));lf=rng.uniform(.3,lab.cfg.load_scale_max);pf=rng.uniform(0,lab.cfg.pv_scale_max)
+                mode='Custom';t=int(rng.integers(lab.steps));lf=rng.uniform(.3,lab.cfg.load_scale_max);pf=rng.uniform(0,lab.cfg.pv_scale_max)
             net=lab.new_net();lab.rating=lab.base_rating*max(1.,pf)
             av=lab.set_profile(net,t,lf,pf);lab.control(net,av,np.zeros(2*lab.ng))
+            layout=(random_layout(lab,rng) if mode=='Custom' else lab.spatial_layouts[mode][t])
+            apply_layout(lab,net,layout)
             p=rng.uniform(-MAX_P_MW,MAX_P_MW,len(der_buses));q=rng.uniform(-MAX_Q_MVAR,MAX_Q_MVAR,len(der_buses))
             if i%5==0:p[:]=0.;q[:]=0.
             apply_der_setpoints(net,der_buses,dict(zip(der_buses,p)),dict(zip(der_buses,q)))

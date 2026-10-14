@@ -10,7 +10,7 @@ import gradio as gr
 import pandapower as pp
 from grid_lab import GridLab,PRESETS
 from live_control import prepare_controller,voltage_violation
-from scenarios import prepare_buckets
+from scenarios import prepare_buckets,random_layout,apply_layout,feeder_paths
 
 
 def oltc_score(lab,y,tap):
@@ -42,16 +42,20 @@ class ScenarioExperiment:
     t: int = 0
     preset: str = 'Custom'
     last: dict = field(default_factory=dict)
+    layout: dict = field(default_factory=dict)
 
     def __post_init__(self):
         prepare_buckets(self.lab)
         self.t=int(self.rng.integers(self.lab.steps))
+        self.layout=random_layout(self.lab,self.rng)
 
     def new_scenario(self,preset=None):
         self.preset=preset or self.preset
         bucket=self.lab.scenario_buckets[self.preset]
         choices=bucket[bucket!=self.t]
         self.t=int(self.rng.choice(choices if len(choices) else bucket))
+        self.layout=(random_layout(self.lab,self.rng) if self.preset=='Custom'
+                     else deepcopy(self.lab.spatial_layouts[self.preset][self.t]))
 
     def sample(self,lf,pf,weights=(1.,.1,1000.),preset='Custom'):
         lab=self.lab
@@ -61,6 +65,7 @@ class ScenarioExperiment:
         baseline=lab.new_net()
         available=lab.set_profile(baseline,self.t,float(lf),float(pf))
         lab.control(baseline,available,np.zeros(2*lab.ng))
+        apply_layout(lab,baseline,self.layout)
         controller=prepare_controller(lab)
         controller.attach_der(baseline)
         y_base=lab.solve(baseline)
@@ -75,7 +80,7 @@ class ScenarioExperiment:
             'actions':actions,'flags':flags,'preset':preset,'load_factor':lf,'pv_factor':pf,
             'load_p_kw':float(baseline.load.p_mw.sum()*1000),
             'load_q_kvar':float(baseline.load.q_mvar.sum()*1000),
-            'pv_kw':float(np.sum(available)*1000)}
+            'pv_kw':float(np.sum(available)*1000),'layout':deepcopy(self.layout)}
         return self.last
 
 
@@ -122,20 +127,26 @@ def comparison_plot(frame,lab):
     """Three voltage traces overlaid, then three maps on a shared color scale."""
     fig=make_subplots(rows=2,cols=3,specs=[[{'colspan':2},None,{'type':'table'}],[{},{},{}]],
         column_widths=[.34,.34,.32],row_heights=[.52,.48],vertical_spacing=.17,horizontal_spacing=.05,
-        subplot_titles=['Voltage Profile','MLP + MPC Actions','Uncontrolled',
+        subplot_titles=['Voltage Profiles · Feeder Order','MLP + MPC Actions','Uncontrolled',
                         f'Best OLTC · Tap {frame["tap_pos"]:+d}','MLP + MPC'])
-    bus=list(frame['baseline'].bus.index);labels=[str(b) for b in bus];values=[]
+    paths=feeder_paths(lab)
+    bus=[]
+    for path in paths:bus.extend(path+[None])
+    labels=['' if b is None else str(b) for b in bus];x=list(range(len(bus)));values=[]
     for key,name,color,symbol,dash in [
         ('baseline','Uncontrolled','#ed9b2d','circle','dash'),
         ('oltc','Best OLTC','#4574c6','diamond','solid'),
         ('mpc','MLP + MPC','#16876b','square','solid')]:
-        v=frame[key].res_bus.loc[bus,'vm_pu'].to_numpy();values.extend(v)
-        fig.add_trace(go.Scatter(x=labels,y=v,mode='lines+markers',name=name,
+        v=[None if b is None else float(frame[key].res_bus.loc[b,'vm_pu']) for b in bus]
+        values.extend(a for a in v if a is not None)
+        fig.add_trace(go.Scatter(x=x,y=v,customdata=labels,mode='lines+markers',name=name,
+            hovertemplate='Bus %{customdata}<br>V %{y:.4f} pu<extra>%{fullData.name}</extra>',
             line={'color':color,'dash':dash,'width':2},marker={'symbol':symbol,'size':5}),row=1,col=1)
     for limit in [lab.cfg.v_min,lab.cfg.v_max]:
         fig.add_hline(y=limit,line_dash='dash',line_color='#d44b52',row=1,col=1)
     fig.add_hline(y=1.,line_color='#aab3bc',line_width=.7,row=1,col=1)
-    fig.update_xaxes(title_text='Bus',type='category',tickfont={'size':9},row=1,col=1)
+    fig.update_xaxes(title_text='Bus along each feeder (gaps separate branches)',tickmode='array',
+        tickvals=x,ticktext=labels,tickfont={'size':9},row=1,col=1)
     fig.update_yaxes(title_text='Voltage (p.u.)',range=[min(.88,min(values)-.01),max(1.12,max(values)+.01)],row=1,col=1)
     actions=frame['actions']
     fig.add_trace(go.Table(header={'values':list(actions.columns),'fill_color':'#eaf3ef','align':'center','height':23},

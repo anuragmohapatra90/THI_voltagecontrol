@@ -16,7 +16,7 @@ from sklearn.exceptions import ConvergenceWarning
 from threadpoolctl import threadpool_limits
 
 PRESETS = {
-    'High PV': (0.55, 8.0),
+    'High PV': (20.0, 10.0),
     'High Load': (7.0, 0.10),
     'Custom': (1.0, 1.0),
 }
@@ -39,7 +39,7 @@ class Config:
     slew: float = 1.0
     forecast: str = 'Perfect'
     seed: int = 42
-    load_scale_max: float = 8.0
+    load_scale_max: float = 30.0
     pv_scale_max: float = 10.0
 
 class GridLab:
