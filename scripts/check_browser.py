@@ -55,5 +55,11 @@ def check_browser(url):
         page.get_by_role('button',name='Load new scenario',exact=True).click()
         page.wait_for_function("(text) => document.getElementById('controls').innerText!==text",arg=previous,timeout=30000)
         page.wait_for_function("() => document.querySelector('#comparison .js-plotly-plot').data[2].name==='MLP + MPC'")
+        page.wait_for_function("""() => {
+            const host=document.getElementById('comparison');
+            const gd=host.querySelector('.js-plotly-plot');
+            const box=host.getBoundingClientRect();
+            return Math.abs(gd.layout.height-(innerHeight-box.top-12))<2 && box.bottom<=innerHeight;
+        }""")
         print('Chromium scenario button updates displayed calendar timestamp: PASS')
         browser.close()

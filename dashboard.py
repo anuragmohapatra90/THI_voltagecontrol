@@ -209,6 +209,10 @@ LAYOUT_JS='''() => {
     pending=false;
     const gd=host.querySelector('.js-plotly-plot');
     if (!gd || !window.Plotly || !gd.layout) return;
+    if (!gd._gridSizingHook) {
+      gd._gridSizingHook=true;
+      gd.on('plotly_afterplot',schedule);
+    }
     const box=host.getBoundingClientRect();
     const height=Math.max(300,Math.floor(window.innerHeight-box.top-12));
     const width=Math.floor(box.width);
