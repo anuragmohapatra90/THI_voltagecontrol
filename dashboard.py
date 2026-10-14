@@ -48,6 +48,7 @@ class ScenarioExperiment:
         prepare_buckets(self.lab)
         self.t=int(self.rng.integers(self.lab.steps))
         self.layout=random_layout(self.lab,self.rng)
+        if self.preset!='Custom':self.new_scenario(self.preset)
 
     def new_scenario(self,preset=None):
         self.preset=preset or self.preset

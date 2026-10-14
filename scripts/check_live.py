@@ -17,6 +17,9 @@ def check_live(lab=None):
     assert lab.profile_times[0].isoformat()=='2016-01-01T00:00:00'
     assert lab.profile_times[-1].isoformat()=='2016-12-31T23:45:00'
     assert controller.training_report['voltage_test_mae_pu']<.006
+    initial=ScenarioExperiment(lab,rng=np.random.default_rng(66),preset='High PV')
+    assert initial.t in lab.scenario_buckets['High PV']
+    assert initial.layout==lab.spatial_layouts['High PV'][initial.t]
     session=ScenarioExperiment(lab,rng=np.random.default_rng(11))
     first=session.sample(1,1);second=session.sample(2,1)
     assert session.t==first['profile_step']
