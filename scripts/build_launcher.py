@@ -9,7 +9,7 @@ nb.metadata={'colab':{'name':'Grid_Control_Lab.ipynb','provenance':[]},
 cells=[]
 def md(s):cells.append(nbf.v4.new_markdown_cell(s))
 def code(s):cells.append(nbf.v4.new_code_cell(s))
-md('''# Grid Control Lab · GitHub-backed launcher
+md('''# Voltage control for ADG · GitHub-backed launcher
 
 This notebook loads the project directly from GitHub. Bookmark this GitHub-linked Colab page; future merged changes are fetched by running the checkout cell again. No source modules are embedded here.
 
@@ -70,6 +70,8 @@ If you ran the old project in this runtime, restart the session first. If instal
 code('''import subprocess, sys
 subprocess.check_call([sys.executable,'-m','pip','install','-q','-r',str(PROJECT_DIR/'requirements.txt')])
 for line in (PROJECT_DIR/'requirements.txt').read_text().splitlines():
+    if '==' not in line:
+        continue
     package,pinned=line.split('==')
     name={'scikit-learn':'sklearn'}.get(package,package)
     imported=sys.modules.get(name)
@@ -80,18 +82,19 @@ md('''## 3. Load the fetched modules and verify the grid
 Modules are loaded from the refreshed checkout, including when you reuse an already-open notebook.''')
 code('''import importlib, os, sys
 os.chdir(PROJECT_DIR)
-for name in ['grid_lab','plots','live_control','scenarios','dashboard','checks']:
+for name in ['grid_lab','plots','active_grid.controller','active_grid.mlp_model','active_grid.training','active_grid','live_control','scenarios','dashboard','checks']:
     sys.modules.pop(name,None)
 sys.path.insert(0,str(PROJECT_DIR))
 importlib.invalidate_caches()
 from grid_lab import GridLab,Config
 from checks import run_checks
 from dashboard import build_dashboard,launch_dashboard
+from live_control import prepare_controller
 import pandas as pd
 from IPython.display import display
 lab=GridLab(Config())
 print('Preparing grid and MLP controller…',flush=True)
-lab.train(1000)
+prepare_controller(lab)
 run_checks(lab)
 print('Grid and MLP ready. Source commit:',SOURCE_COMMIT)''')
 md('''## 4. Open the dashboard in another tab

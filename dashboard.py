@@ -9,7 +9,7 @@ from plotly.subplots import make_subplots
 import gradio as gr
 import pandapower as pp
 from grid_lab import GridLab,PRESETS
-from live_control import snapshot_mpc
+from live_control import prepare_controller,voltage_violation
 from scenarios import prepare_buckets
 
 
@@ -61,15 +61,14 @@ class ScenarioExperiment:
         baseline=lab.new_net()
         available=lab.set_profile(baseline,self.t,float(lf),float(pf))
         lab.control(baseline,available,np.zeros(2*lab.ng))
+        controller=prepare_controller(lab)
+        controller.attach_der(baseline)
         y_base=lab.solve(baseline)
         oltc,y_oltc,tap=best_oltc(lab,baseline)
         mpc=deepcopy(baseline)
-        y_mpc,u,info,flags=snapshot_mpc(lab,mpc,available,np.zeros(2*lab.ng),weights)
-        feasible=np.minimum(available,lab.rating)
-        actions=pd.DataFrame({'Bus':lab.net.sgen.loc[lab.pv_ids,'bus'].to_numpy(),
-            'P (kW)':(mpc.sgen.loc[lab.pv_ids,'p_mw'].to_numpy()-feasible)*1000,
-            'Q (kVar)':mpc.sgen.loc[lab.pv_ids,'q_mvar'].to_numpy()*1000})
-        actions=actions.groupby('Bus',as_index=False).sum().round(2)
+        y_mpc,p_set,q_set,flags=controller.run_snapshot(lab,mpc,weights)
+        actions=pd.DataFrame({'Bus':list(p_set),'P (kW)':[1000*p_set[b] for b in p_set],
+            'Q (kVar)':[1000*q_set[b] for b in p_set]}).round(2)
         self.last={'profile_step':self.t,'timestamp':lab.profile_times[self.t],
             'baseline':baseline,'oltc':oltc,'mpc':mpc,
             'y_base':y_base,'y_oltc':y_oltc,'y_mpc':y_mpc,'tap_pos':tap,
@@ -110,7 +109,7 @@ def add_heatmap(fig,net,positions,column):
            float(load_q.get(b,0)*1000),float(gen_p.get(b,0)*1000)] for b in buses]
     fig.add_trace(go.Scatter(x=[positions[int(b)][0] for b in buses],y=[positions[int(b)][1] for b in buses],
         mode='markers+text',text=[str(b) for b in buses],textposition='top center',textfont={'size':9},customdata=data,
-        hovertemplate='Bus %{customdata[0]}<br>V %{customdata[1]:.4f} pu<br>Load P %{customdata[2]:.1f} kW<br>Load Q %{customdata[3]:.1f} kVar<br>PV %{customdata[4]:.1f} kW<extra></extra>',
+        hovertemplate='Bus %{customdata[0]}<br>V %{customdata[1]:.4f} pu<br>Load P %{customdata[2]:.1f} kW<br>Load Q %{customdata[3]:.1f} kVar<br>Generation P %{customdata[4]:.1f} kW<extra></extra>',
         marker={'symbol':['square' if int(b) in pv_buses else 'circle' for b in buses],
             'size':[12 if int(b) in pv_buses else 9 for b in buses],
             'color':[d[1] for d in data],'coloraxis':'coloraxis',
@@ -159,8 +158,8 @@ def update_configuration(preset,lf,pf,wp,wq,wv,session):
         frame=session.sample(lf,pf,(wp,wq,wv),preset)
         timestamp=frame['timestamp'].strftime('%d %b %Y · %H:%M')
         caption=f'**{timestamp}**'
-        safe=lambda y:'within limits' if session.lab.violation(y)<=1e-7 else 'outside limits'
-        status=f'OLTC: tap {frame["tap_pos"]:+d}, {safe(frame["y_oltc"])}  \nMLP + MPC: {safe(frame["y_mpc"])}'
+        safe='within limits' if voltage_violation(session.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
+        status=f'**OLTC tap position: {frame["tap_pos"]:+d}**  \nMLP + MPC voltage: {safe}'
         return session,comparison_plot(frame,session.lab),caption,status
     except Exception as exc:raise gr.Error(str(exc)) from exc
 
@@ -230,13 +229,13 @@ LAYOUT_JS='''() => {
 
 def build_dashboard(lab=None):
     seed=lab or GridLab()
-    if seed.model is None:
-        print('Preparing MLP controller…',flush=True);seed.train(1000);print('MLP ready.',flush=True)
+    if getattr(seed,'voltage_controller',None) is None:
+        print('Preparing ADG MLP + MPC controller…',flush=True);prepare_controller(seed);print('MLP ready.',flush=True)
     if not hasattr(seed,'scenario_buckets'):
         print('Preparing voltage-stress scenario buckets…',flush=True);prepare_buckets(seed)
-    with gr.Blocks(title='Active Grid Control',analytics_enabled=False,fill_height=True) as app:
+    with gr.Blocks(title='Voltage control for ADG',analytics_enabled=False,fill_height=True) as app:
         state=gr.State(value=lambda:ScenarioExperiment(deepcopy(seed)))
-        gr.Markdown('# ⚡ AI-Driven Active Distribution Grid Control',elem_id='title')
+        gr.Markdown('# Voltage control for ADG',elem_id='title')
         with gr.Row(elem_id='workspace'):
             with gr.Column(elem_id='controls'):
                 gr.Markdown('### 1. Scenario Initialization')
