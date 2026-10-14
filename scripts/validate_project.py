@@ -48,6 +48,9 @@ def main():
     lab=GridLab()
     print(run_checks(lab))
     assert lab.metadata()['source_commit']=='local-test-commit'
-    print('Thin notebook, source compilation, physical checks, and commit metadata: PASS')
+    from check_live import check_live,check_server
+    check_live(lab)
+    check_server(lab)
+    print('Thin notebook, source compilation, physical checks, live UI behavior, and commit metadata: PASS')
 
 if __name__=='__main__':main()
