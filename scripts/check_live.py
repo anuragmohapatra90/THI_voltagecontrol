@@ -46,9 +46,14 @@ def check_live(lab=None):
     assert (session.last['actions']['P (kW)']<0).any()
     net=session.last['mpc'];p=net.sgen.loc[lab.pv_ids,'p_mw'].to_numpy();q=net.sgen.loc[lab.pv_ids,'q_mvar'].to_numpy()
     assert np.all(p*p+q*q<=lab.rating**2+1e-10)
-    old_q=session.last['actions']['Q (kVar)'].to_numpy()
     update_configuration('Custom',.55,3,.01,100,1000,session)
-    assert not np.allclose(old_q,session.last['actions']['Q (kVar)'].to_numpy(),atol=.1)
+    # Different weights can legitimately select the same safe backup action.
+    assert session.last['flags']['weights']==(.01,100.,1000.)
+    assert session.last['flags']['safe']
+    applied=session.last['mpc'].sgen.loc[lab.pv_ids]
+    baseline_p=session.last['baseline'].sgen.loc[lab.pv_ids,'p_mw']
+    assert np.isclose(session.last['flags']['action_cost'],
+        .01*np.sum((applied.p_mw-baseline_p)**2)+100*np.sum(applied.q_mvar**2),atol=1e-9)
     months=set()
     for _ in range(250):
         before=session.t;session.new_scenario();assert session.t!=before

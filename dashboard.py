@@ -178,7 +178,9 @@ def preset_controls(preset):
 CSS='''
 html,body {margin:0;height:100%;overflow:hidden}
 .gradio-container {height:100dvh!important;max-width:none!important;padding:12px 18px!important;box-sizing:border-box}
-.gradio-container > .main {height:100%;min-height:0}
+.gradio-container > .main {height:100%;min-height:0;max-width:none!important}
+.gradio-container .app {display:flex;flex-direction:column;flex:1;min-height:0;height:100%;padding:0!important}
+.gradio-container .app > .column {flex:1;min-height:0;height:100%}
 .gradio-container .fill-height {min-height:0}
 #title {flex:0 0 auto!important;margin:0!important;padding-bottom:8px;border-bottom:2px solid #16876b}
 #title h1 {font-size:22px;margin:0;line-height:1.3}

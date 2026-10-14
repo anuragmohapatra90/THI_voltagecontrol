@@ -90,8 +90,9 @@ def snapshot_mpc(lab,net,available,previous,weights=(1.,.1,1000.)):
         except (pp.LoadflowNotConverged,ValueError):pass
     if not evaluated:raise ValueError('No control candidate produced a converged AC solution.')
     chosen=min(evaluated,key=lambda e:(e[0]>1e-7,e[0] if e[0]>1e-7 else e[1]))
-    violation,_,u,y,info,index=chosen
+    violation,action_cost,u,y,info,index=chosen
     lab.control(net,available,u);lab.solve(net)
     accepted=index==0 and result.success and not ood
     return y,u,info,{'safe':violation<=1e-7,'backup':not accepted,
-                    'solver_success':bool(result.success),'solver_message':str(result.message),'out_of_domain':ood}
+                    'solver_success':bool(result.success),'solver_message':str(result.message),'out_of_domain':ood,
+                    'action_cost':float(action_cost),'weights':(wp,wq,wv)}
