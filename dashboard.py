@@ -185,14 +185,16 @@ html,body {margin:0;height:100%;overflow:hidden}
 #title {flex:0 0 auto!important;margin:0!important;padding-bottom:8px;border-bottom:2px solid #16876b}
 #title h1 {font-size:22px;margin:0;line-height:1.3}
 #workspace {flex:1!important;min-height:0!important;flex-wrap:nowrap!important;gap:16px}
-#controls {flex:0 0 290px!important;min-width:290px!important;max-width:290px!important;gap:8px;
+#controls {flex:0 0 290px!important;min-width:290px!important;max-width:290px!important;min-height:0;gap:6px;
  background:#f6f8fa;border:1px solid #e4e9ed;border-radius:10px;padding:12px;box-sizing:border-box}
 #controls h3 {font-size:15px;margin:0}
 #controls .prose p {margin:0;font-size:13px}
 #comparison {flex:1!important;min-width:0!important;min-height:0!important;height:100%;padding:0!important;border:0!important}
 #comparison > div {min-height:0}
 #comparison [data-testid="plotly"] {height:100%!important;width:100%!important}
-#controls .block {padding:8px!important}
+#controls > * {flex-grow:0!important}
+#controls .block {padding:4px 8px!important}
+#controls .block:has(.prose) {padding:0!important}
 #gain-row {gap:6px;flex-wrap:nowrap!important}
 #gain-row > div {min-width:0!important}
 footer {display:none!important}
@@ -208,8 +210,9 @@ LAYOUT_JS='''() => {
     const gd=host.querySelector('.js-plotly-plot');
     if (!gd || !window.Plotly || !gd.layout) return;
     const box=host.getBoundingClientRect();
-    const height=Math.max(300,Math.floor(box.height));
+    const height=Math.max(300,Math.floor(window.innerHeight-box.top-12));
     const width=Math.floor(box.width);
+    if (Math.abs(box.height-height)>1) host.style.height=height+'px';
     if (Math.abs((gd.layout.height||0)-height)>1 || Math.abs((gd.layout.width||0)-width)>1)
       window.Plotly.relayout(gd,{height,width});
   };

@@ -30,7 +30,9 @@ def check_browser(url):
             page.wait_for_function("""() => {
                 const host=document.getElementById('comparison');
                 const gd=host.querySelector('.js-plotly-plot');
-                return Math.abs(gd.layout.height-host.getBoundingClientRect().height)<2;
+                const box=host.getBoundingClientRect();
+                const expected=innerHeight-box.top-12;
+                return Math.abs(gd.layout.height-expected)<2 && Math.abs(box.height-expected)<2;
             }""")
             result=page.evaluate("""() => {
                 const controls=document.getElementById('controls').getBoundingClientRect();
