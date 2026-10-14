@@ -16,10 +16,9 @@ from sklearn.exceptions import ConvergenceWarning
 from threadpoolctl import threadpool_limits
 
 PRESETS = {
-    'Normal': (1.0, 1.0),
-    'High loading': (2.5, 0.35),
-    'High PV': (0.55, 3.0),
-    'Low PV': (1.5, 0.10),
+    'High PV': (0.55, 8.0),
+    'High Load': (7.0, 0.10),
+    'Custom': (1.0, 1.0),
 }
 MODES = ['Uncontrolled', 'Automatic OLTC', 'MLP + MPC']
 
@@ -40,6 +39,8 @@ class Config:
     slew: float = 1.0
     forecast: str = 'Perfect'
     seed: int = 42
+    load_scale_max: float = 8.0
+    pv_scale_max: float = 10.0
 
 class GridLab:
     def __init__(self, cfg=Config()):
@@ -52,6 +53,10 @@ class GridLab:
         if sb.profiles_are_missing(self.net):
             raise ValueError('SimBench profile data are missing.')
         self.profiles = sb.get_absolute_values(self.net, profiles_instead_of_study_cases=True)
+        self.profile_times = pd.DatetimeIndex(pd.to_datetime(
+            self.net.profiles['load']['time'], format='%d.%m.%Y %H:%M'))
+        if len(self.profile_times) != len(self.profiles[('load','p_mw')]):
+            raise ValueError('SimBench calendar and absolute profiles do not align.')
         # Retain absolute profiles separately; do not copy a full-year dataset per power flow.
         self.net.pop('profiles', None)
         self.tid = self.net.trafo.index[0]
@@ -156,9 +161,9 @@ class GridLab:
         loadpool=np.flatnonzero(loadtotal>=np.quantile(loadtotal,.90))
         for i in range(samples):
             t=int(rng.choice(pvpool if i%3==0 else loadpool)) if i%3!=2 else int(rng.integers(self.steps))
-            pvfactor=rng.uniform(.0,3.5)
+            pvfactor=rng.uniform(.0,self.cfg.pv_scale_max)
             self.rating=self.base_rating*max(1.0,pvfactor)
-            available=self.set_profile(net,t,rng.uniform(.3,3.0),pvfactor)
+            available=self.set_profile(net,t,rng.uniform(.3,self.cfg.load_scale_max),pvfactor)
             net.trafo.loc[self.tid,'tap_pos']=rng.integers(self.tap_min,self.tap_max+1)
             a=rng.uniform(0,1,self.ng)
             if i%5==0: a[:]=0
@@ -288,7 +293,7 @@ class GridLab:
         if viol>1e-7: status+=' / residual violation'
         return y,u,info,status,dict(solver_success=bool(result.success),solver_message=str(result.message),out_of_domain=ood)
 
-    def run(self,mode='Automatic OLTC',preset='Normal',start=0,steps=24,custom=None,progress=None):
+    def run(self,mode='Automatic OLTC',preset='Custom',start=0,steps=24,custom=None,progress=None):
         if mode not in MODES: raise ValueError(mode)
         lf,pf=custom if custom is not None else PRESETS[preset]
         self.rating=self.base_rating*max(1.0,pf)

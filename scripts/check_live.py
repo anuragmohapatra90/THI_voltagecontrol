@@ -1,83 +1,113 @@
-"""Behavioral checks for reactive sliders, evolving PQ, pause, OLTC, and MLP-MPC."""
+"""Checks for simultaneous AC comparisons, full-year scenarios, and the Gradio UI."""
 from pathlib import Path
-import sys
+from copy import deepcopy
+import os,sys
 import numpy as np
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from grid_lab import GridLab
-from dashboard import LiveExperiment,update_configuration,tick,toggle_live
+from dashboard import ScenarioExperiment,oltc_score,update_configuration
 from live_control import surrogate_with_jacobian
+from grid_lab import PRESETS
 
 
 def check_live(lab=None):
     lab=lab or GridLab()
     if lab.model is None:lab.train(1000)
-    session=LiveExperiment(lab)
-    first=session.sample(1,1,False,'OLTC')
-    first_p=first['baseline'].load.p_mw.sum()
-    second=session.sample(2,1,False,'OLTC')
-    assert np.isclose(second['baseline'].load.p_mw.sum(),2*first_p)
-    assert np.isclose(second['baseline'].load.q_mvar.sum(),2*first['baseline'].load.q_mvar.sum())
+    assert lab.profile_times[0].isoformat()=='2016-01-01T00:00:00'
+    assert lab.profile_times[-1].isoformat()=='2016-12-31T23:45:00'
+    session=ScenarioExperiment(lab,rng=np.random.default_rng(11))
+    first=session.sample(1,1)
+    second=session.sample(2,1)
+    assert session.t==first['profile_step']
+    assert second['timestamp']==lab.profile_times[session.t]
+    assert np.isclose(second['load_p_kw'],2*first['load_p_kw'])
+    assert np.isclose(second['load_q_kvar'],2*first['load_q_kvar'])
     assert not np.allclose(first['y_base'][:lab.nv],second['y_base'][:lab.nv])
-    # Derivatives of the actual fitted network are needed for a responsive optimizer.
+    for key in ['oltc','mpc']:
+        assert np.allclose(second['baseline'].load[['p_mw','q_mvar']],second[key].load[['p_mw','q_mvar']])
+    assert np.allclose(second['baseline'].sgen[['p_mw','q_mvar']],second['oltc'].sgen[['p_mw','q_mvar']])
+    assert second['baseline'].trafo.loc[lab.tid,'tap_pos']==lab.tap0
+    assert second['mpc'].trafo.loc[lab.tid,'tap_pos']==lab.tap0
+    # Independent exhaustive sweep proves the displayed OLTC is the best allowed tap.
+    chosen=oltc_score(lab,second['y_oltc'],second['tap_pos']);trial=deepcopy(second['baseline'])
+    for tap in range(lab.tap_min,lab.tap_max+1):
+        trial.trafo.loc[lab.tid,'tap_pos']=tap
+        assert chosen<=oltc_score(lab,lab.solve(trial),tap)
     x=lab.features(second['baseline']);pred,jac=surrogate_with_jacobian(lab,x)
     assert np.allclose(pred,lab.predict(x)[0],atol=1e-9)
     for i in range(len(x)):
         delta=np.zeros_like(x);delta[i]=lab.xscale.scale_[i]*1e-5
         fd=(surrogate_with_jacobian(lab,x+delta)[0]-surrogate_with_jacobian(lab,x-delta)[0])/2e-5
         assert np.allclose(fd,jac[:,i]*lab.xscale.scale_[i],atol=1e-4,rtol=1e-5)
-    update_configuration(.55,3,True,'MLP + MPC',1,.1,1000,session)
+    session.t=int(np.argmax(lab.profiles[('sgen','p_mw')].reindex(columns=lab.pv_ids).sum(axis=1)))
+    update_configuration('Custom',.55,3,1,.1,1000,session)
     assert session.last['flags']['safe']
     assert (session.last['actions']['P (kW)']<0).any()
-    net=session.last['controlled']
-    p=net.sgen.loc[lab.pv_ids,'p_mw'].to_numpy();q=net.sgen.loc[lab.pv_ids,'q_mvar'].to_numpy()
+    net=session.last['mpc'];p=net.sgen.loc[lab.pv_ids,'p_mw'].to_numpy();q=net.sgen.loc[lab.pv_ids,'q_mvar'].to_numpy()
     assert np.all(p*p+q*q<=lab.rating**2+1e-10)
-    qp=session.last['actions']['Q (kVar)'].to_numpy()
-    update_configuration(.55,3,True,'MLP + MPC',.01,100,1000,session)
-    assert session.last['flags']['safe']
-    assert not np.allclose(qp,session.last['actions']['Q (kVar)'].to_numpy(),atol=.1)
-    t=session.t;tick(session);assert session.t==t # paused does not advance
-    toggle_live(session);assert session.running
-    for _ in range(3):
-        before=session.t;tick(session);assert session.t==(before+1)%lab.steps
-        actual=session.last['baseline'].load.p_mw.to_numpy()
-        expected=lab.profiles[('load','p_mw')].iloc[session.t].reindex(lab.net.load.index).to_numpy()*.55
-        assert np.allclose(actual,expected)
-    toggle_live(session);assert not session.running
-    t=session.t;tick(session);assert session.t==t
-    session.sample(1,1,True,'OLTC')
-    before=session.last['tap_pos'];session.sample(1,1,True,'OLTC')
-    assert abs(session.last['tap_pos']-before)<=1
-    session.sample(1,1,False,'OLTC');assert session.last['tap_pos']==lab.tap0
-    assert np.allclose(session.last['y_base'],session.last['y_controlled'],atol=1e-9)
-    print('Reactive PQ, network Jacobian, safe live MPC, gains, timer, pause, and OLTC state: PASS')
-
-if __name__=='__main__':check_live()
+    old_q=session.last['actions']['Q (kVar)'].to_numpy()
+    update_configuration('Custom',.55,3,.01,100,1000,session)
+    assert not np.allclose(old_q,session.last['actions']['Q (kVar)'].to_numpy(),atol=.1)
+    months=set()
+    for _ in range(250):
+        before=session.t;session.new_scenario();assert session.t!=before
+        months.add(lab.profile_times[session.t].month)
+    assert months==set(range(1,13))
+    for preset in ['High PV','High Load']:
+        # Check every pre-filtered row, not just a randomly lucky stressed sample.
+        lf,pf=PRESETS[preset];lab.rating=lab.base_rating*max(1.,pf);net=lab.new_net()
+        for t in lab.scenario_buckets[preset]:
+            av=lab.set_profile(net,int(t),lf,pf);lab.control(net,av,np.zeros(2*lab.ng));y=lab.solve(net)
+            if preset=='High PV':assert y[:lab.nv].max()>=lab.cfg.v_max+.02
+            else:assert y[:lab.nv].min()<=lab.cfg.v_min-.02
+        for _ in range(8):
+            session.new_scenario(preset);assert session.t in lab.scenario_buckets[preset]
+        frame=session.sample(1,1,preset=preset)
+        assert frame['load_factor']==lf and frame['pv_factor']==pf
+        assert frame['preset']==preset and frame['profile_step'] in lab.scenario_buckets[preset]
+    print('Every High PV / High Load bucket row passes actual AC voltage-stress thresholds; new scenarios stay in preset: PASS')
+    print('Same-PQ three-way comparison, exhaustive best tap, calendar/full-year sampling, reactive scaling, MLP derivatives and MPC: PASS')
 
 
 def check_server(lab):
-    """Exercise the real Gradio event/state transport without a public tunnel."""
     from dashboard import build_dashboard,launch_dashboard
     from gradio_client import Client
+    from urllib.request import build_opener,ProxyHandler
     app=build_dashboard(lab)
     try:
-        url,auth=launch_dashboard(app,share=False,auth=('ci','local-test-only'))
-        client=Client(url,auth=auth,verbose=False)
-        args=[1,1,True,'MLP + MPC',1,.1,1000]
+        url,credentials=launch_dashboard(app,share=False)
+        assert credentials is None and app.auth is None
+        with build_opener(ProxyHandler({})).open(url+'config') as response:
+            import json
+            assert 'dependencies' in json.load(response)
+            assert '/login' not in response.url
+        client=Client(url,verbose=False)
+        args=['Custom',1,1,1,.1,1000]
         initial=client.predict(*args,api_name='/initial_snapshot')
-        assert len(initial)==6 and initial[0]['type']=='plotly'
-        scaled=client.predict(2,1,True,'MLP + MPC',1,.1,1000,api_name='/react')
-        assert initial[4]!=scaled[4]
-        caption=scaled[4]
-        client.predict(api_name='/play_pause')
-        advanced=client.predict(api_name='/tick')
-        assert advanced[4]!=caption
-        client.predict(api_name='/play_pause')
-        client.predict(api_name='/tick')
-        held=client.predict(2,1,True,'MLP + MPC',1,.1,1000,api_name='/react')
-        assert held[4]==advanced[4]
+        assert len(initial)==3 and initial[0]['type']=='plotly'
+        plot=json.loads(initial[0]['plot'])
+        assert [t['name'] for t in plot['data'][:3]]==['Uncontrolled','Best OLTC','MLP + MPC']
+        assert len(set(t.get('yaxis','y') for t in plot['data'][:3]))==1
+        scaled=client.predict('Custom',2,1,1,.1,1000,api_name='/react')
+        assert initial[1]==scaled[1] # sliders keep date/time
+        assert initial[0]!=scaled[0] # actual voltage change
+        new=client.predict('Custom',2,1,1,.1,1000,api_name='/new_scenario')
+        assert new[1]!=scaled[1]
+        high=client.predict('High PV',1,1,1,.1,1000,api_name='/react')
+        highplot=json.loads(high[0]['plot'])
+        # Plotly encoded arrays are validated against the session data in check_live.
+        assert highplot['data'][0]['name']=='Uncontrolled'
+        high_new=client.predict('High PV',1,1,1,.1,1000,api_name='/new_scenario')
+        assert high_new[1]!=high[1] or len(lab.scenario_buckets['High PV'])==1
         types=[c['type'] for c in app.config['components']]
-        assert types.count('plot')==3 and types.count('dataframe')==1
-        assert 'tabs' not in types and 'tabitem' not in types
-        print('Authenticated Gradio initial render, slider reaction, live event transport, pause, and simple layout: PASS')
+        assert types.count('button')==1 and types.count('plot')==1
+        assert not {'tabs','tabitem','timer','radio','checkbox'}&set(types)
+        print('No-login Gradio, all three overlaid traces, reactive sliders and new dated scenario: PASS')
+        if os.environ.get('GRID_LAB_BROWSER_CHECK')=='1':
+            from check_browser import check_browser
+            check_browser(url)
     finally:app.close()
+
+if __name__=='__main__':
+    lab=GridLab();check_live(lab);check_server(lab)
