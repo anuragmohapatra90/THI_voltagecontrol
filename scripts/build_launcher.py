@@ -13,7 +13,7 @@ md('''# Grid Control Lab · GitHub-backed launcher
 
 This notebook loads the project directly from GitHub. Bookmark this GitHub-linked Colab page; future merged changes are fetched by running the checkout cell again. No source modules are embedded here.
 
-**Run all → Open dashboard → adjust PQ or press Play live PQ.** Use a CPU runtime. Keep Colab connected while using the separate dashboard tab.
+**Run all → Open dashboard → load a scenario or adjust PQ.** Use a CPU runtime. Keep Colab connected while using the separate dashboard tab.
 
 After a PR is merged, restart the session and run all to load the latest code cleanly. An open dashboard does not update itself in the middle of an experiment. The exact fetched commit is printed and exported with experiment results.''')
 md('''## 1. Fetch current project source
@@ -80,7 +80,7 @@ md('''## 3. Load the fetched modules and verify the grid
 Modules are loaded from the refreshed checkout, including when you reuse an already-open notebook.''')
 code('''import importlib, os, sys
 os.chdir(PROJECT_DIR)
-for name in ['grid_lab','plots','live_control','dashboard','checks']:
+for name in ['grid_lab','plots','live_control','scenarios','dashboard','checks']:
     sys.modules.pop(name,None)
 sys.path.insert(0,str(PROJECT_DIR))
 importlib.invalidate_caches()
@@ -95,17 +95,15 @@ lab.train(1000)
 run_checks(lab)
 print('Grid and MLP ready. Source commit:',SOURCE_COMMIT)''')
 md('''## 4. Open the dashboard in another tab
-The server continues in background threads after this cell finishes. Use the printed link and credentials. The model is prepared above. Change the load/PV sliders for immediate reaction, or press Play live PQ to advance the profiles.
+The server continues in background threads after this cell finishes. Open the printed link directly; there is no dashboard login. Change the load/PV sliders for immediate reaction, or use Load new scenario to select another date/time from the full SimBench year. All three control results appear together.
 
 If a new commit has been merged, restart the session and run all before launching a new comparison. Reopening the same GitHub-Colab link also loads the latest notebook content.''')
 code('''from IPython.display import HTML,display
 from html import escape
 grid_app=build_dashboard(lab)
-dashboard_url,login=launch_dashboard(grid_app,share=True)
+dashboard_url,_=launch_dashboard(grid_app,share=True)
 print('DASHBOARD READY · source commit',SOURCE_COMMIT[:12])
 print('Open in another tab:',dashboard_url)
-print('Username:',login[0])
-print('Password:',login[1])
 display(HTML('<a href="'+escape(dashboard_url,quote=True)+'" target="_blank" rel="noopener noreferrer" '
              'style="display:inline-block;background:#087f8c;color:white;padding:14px 24px;border-radius:8px;'
              'font-size:18px;text-decoration:none">Open dashboard ↗</a>'))''')
