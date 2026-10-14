@@ -1,6 +1,12 @@
-# Model assumptions and scenarios
+# Experiment and model assumptions
 
-## Scenarios
+## Reference experiment
+
+The dashboard follows `anuragmohapatra90/ADG_datadriven`: choose a random base scenario, scale load and PV, enable the controller, adjust P/Q/voltage costs, and compare uncontrolled versus controlled bus voltages and network heatmaps. In this project the grid and absolute PQ injections come from SimBench, as requested; the old synthetic two-feeder grid is not substituted for the benchmark.
+
+The default network is `1-LV-rural1--0-sw`. A random scenario selects a full-year SimBench timestamp. Changing sliders retains that timestamp and recalculates both power flows from the same exogenous injections. Play advances one actual 15-minute profile sample per delivered timer tick; Pause holds the timestamp. The two-second display interval is accelerated visualization rather than physical actuator timing. Live updates use the latest server-side controls, so queued timer calls do not restore older slider settings.
+
+## Presets and injections
 
 | Preset | Load P/Q factor | PV factor |
 |---|---:|---:|
@@ -9,43 +15,40 @@
 | High PV | 0.55 | 3.00 |
 | Low PV | 1.50 | 0.10 |
 
-All PQ shapes originate in `simbench.get_absolute_values(..., profiles_instead_of_study_cases=True)`. Load P and Q scale together. PV Q is controlled rather than inherited from the profile, with unity power factor for the uncontrolled and OLTC cases. Non-PV sgens keep their original PQ profiles.
+`simbench.get_absolute_values(..., profiles_instead_of_study_cases=True)` supplies the load/generator shapes. Load P and Q scale together. PV Q is zero in the baseline and is actively controlled in the MLP-MPC case. Other sgens retain their PQ profiles. No artificial measurement noise is added to the AC validation voltages.
 
-A PV factor **above 1** represents additional installed PV/inverter capacity. The inverter rating is the original rating (at least 1.10 × nominal PV P) multiplied by `max(1, PV factor)`. A factor **at or below 1** changes available PV output only. Ratings are identical across all compared controllers within a scenario. Physical clipping above the rating is recorded separately from controller-commanded curtailment. This makes high-PV stress electrically feasible at the inverter level and exposes grid constraints.
+PV factors above one represent added installed PV/inverter capacity. The original apparent-power rating is at least 1.10 × nominal PV P, multiplied by `max(1, PV factor)`. Factors at or below one reduce availability without reducing installed capacity. Baseline and controlled cases use identical equipment within the same scenario. Inverter clipping above the rating is separate from commanded curtailment.
 
-## Controllers
+## Controls
 
-- **Uncontrolled:** neutral transformer tap; PV at available/clipped P; PV Q = 0.
-- **Automatic OLTC:** senses the transformer LV terminal. Default deadband 0.99–1.01 pu, at most one tap per 15-minute step, configurable delay. Adjacent taps are evaluated with AC power flow so HV/LV tap orientation cannot be assumed incorrectly. No inverter control.
-- **MLP + MPC:** fixed neutral tap; grouped PV curtailment and reactive capability fractions. Individual inverters obey `P² + Q² ≤ S²`. Positive pandapower sgen Q injects reactive power. A four-step horizon solves an SLSQP constrained nonlinear program; only its first action is applied, and the horizon is replanned at every step.
+- **Off:** neutral transformer tap, available/clipped PV P, PV Q = 0.
+- **OLTC:** transformer LV-terminal voltage feedback with a 0.99–1.01 pu deadband. Adjacent taps are AC-evaluated to handle tap orientation correctly; at most one movement is applied per evaluated sample. Taps persist as PQ evolves.
+- **MLP + MPC:** neutral tap, grouped curtailment and reactive-capability fractions. Each inverter satisfies `P² + Q² ≤ S²`. Positive pandapower sgen Q injects reactive power.
 
-The MLP uses two 64-unit tanh layers and a linear skip connection (Ridge baseline plus learned nonlinear residual). Its inputs are detailed load/sgen P/Q and tap position; its outputs are every monitored LV voltage, line loading, and transformer loading. The network is algebraic and quasi-static; the horizon contains forecast injections and action changes, not storage dynamics. The objective penalizes voltage deviation, predicted violations, curtailment, Q use, loading, and action changes. Limits are tightened using calibration errors. Constraints also enforce maximum curtailment and normalized action slew.
+The original LV transformer is not declared as an OLTC. The simulation explicitly models an OLTC retrofit: HV-side ratio changer with ±8 taps at 1.25% per tap. This is additional simulated equipment, not original SimBench capability. The assumption is kept in code/model documentation rather than repeated as a dashboard panel.
 
-The training data use full-year SimBench profile shapes, load factors 0.3–3, PV factors 0–3.5, all available taps, and random feasible P/Q actions. The seeded random splits are 70% training, 15% calibration, and 15% test. These are simulation holdouts; they do not establish generalization to another grid, topology, or real measurements. The dashboard reports convergence warnings and errors.
+The live MPC is a one-step receding controller for the current PQ snapshot, matching the old experiment's interaction. Its gain-weighted objective is
 
-Every applied MPC action is AC-screened. If the solver fails, the proposal leaves the training feature range, or the proposed action violates actual limits, bounded backup actions are also evaluated with AC power flow. A feasible backup is selected when available; otherwise the least-violating converged candidate is applied and flagged. The backup search is finite, so it cannot prove infeasibility or provide a universal safety guarantee. Solver messages and backup usage remain in the result logs. This is a research simulation, not a certified grid controller.
+`J = wP * sum(delta_P_MW²) + wQ * sum(Q_MVAr²) + wV * sum(voltage_violation_pu²)`
 
-## OLTC assumption and scope
+plus the corresponding normalized thermal-violation penalty. The voltage and thermal constraints use empirical calibration margins. Active actions shown in the table are signed changes from feasible available PV: negative P means curtailment. Q is inverter reactive injection.
 
-The default SimBench rural LV transformer has fixed/off-load taps and no declared OLTC. The dashboard explicitly permits a simulated retrofit: an HV-side ratio changer with ±8 taps and 1.25% per tap. This changes transformer equipment capability and is not original SimBench equipment. Disable the retrofit to require a declared original OLTC. OLTC safety assessment checks all monitored voltages and thermal loading even though its control sensor is local. A local voltage regulator cannot inherently resolve feeder thermal congestion.
+A direct derivative of the fitted tanh/linear-skip MLP is used by SLSQP to keep snapshot updates responsive. Applied actions are checked against actual pandapower AC results. Out-of-domain/failed/unsafe proposals trigger a finite AC-screened backup search. If no screened action meets all limits, the least-violating converged action is applied and the dashboard says Outside limits. This search is not a proof of infeasibility or a universal safety guarantee.
 
-The first project supports LV grids with one two-winding transformer and PV-labelled sgens, without storage or gen elements. Balanced AC power flow is used. The slack source retains its SimBench voltage. SimBench load-model NaNs are filled and power flow is explicitly constant-PQ. `tap_changer_type='Ratio'` is set to make taps effective in pandapower 3.x. Phase imbalance, stochastic forecast uncertainty, seconds-scale tap timing, communications, and inverter hardware dynamics are not modeled. Perfect forecasts are labelled as a best-case benchmark; persistence is selectable.
+New random scenarios or controller type changes reset actuator history. Scaling and gain changes keep the current timestamp and controller state. The offline `GridLab.run()` engine remains available for longer-horizon experiments; its advanced settings are not exposed as dashboard tabs.
 
-## Outputs and editing
+## Learning and assessment
 
-The dashboard provides voltage envelopes, all-bus voltage heatmaps, loading, tap positions, commanded curtailment, step logs, and group actions. A safe step requires every monitored LV voltage and thermal loading to be within the configured limits; power-flow failures count as unsafe. Export ZIP includes CSVs and JSON settings / model validation. Energy uses a 0.25-hour step.
+The default model is prepared automatically once before opening the app, using 1,000 AC samples. It has two 64-unit tanh layers with a Ridge linear skip connection. Inputs are detailed load/sgen P/Q and tap position. Outputs are all monitored LV voltages, energized line loading, and transformer loading.
 
-Edit `PRESETS` in `grid_lab.py` to change defaults. Edit `Config`, the `mpc()` objective, or the `oltc()` deadband logic for research variants. Restart Colab and run the GitHub-backed launcher after merged edits; retrain whenever grid topology, PV grouping, or transformer assumptions change. A module-generated script called `checks.py` verifies tap effects, inverter capability, and both non-MLP controllers; it can also test an already trained lab.
+Training uses full-year shapes, extra high-PV/high-load samples, load factors 0.3–3, PV factors 0–3.5, feasible inverter actions, and tap positions. Seeded splits are 70% train, 15% calibration, and 15% test. Error reports remain available in `lab.training_report`; they are not extra frontend tables. These simulated holdouts do not establish generalization to another topology or real equipment.
 
-The old private reference notebook could not be read, so this implementation follows the supplied description rather than copying its layout or controller code.
+Safe means all monitored LV voltages are within 0.95–1.05 pu and all monitored lines/transformers are at or below 100% loading. Balanced, constant-PQ AC power flow is used; no storage, phase imbalance, frequency dynamics, communications, or seconds-scale equipment response is modeled. SimBench's source voltage is retained. `tap_changer_type='Ratio'` is explicitly set, and missing ZIP-load coefficients are treated as constant PQ.
 
-## Primary technical references
+The first implementation supports LV grids with one two-winding transformer and PV-labelled sgens, without gen or storage elements. Model/grid settings are edited in `Config` or Python code. The backend metadata retains the source repository and fetched commit.
 
-- SimBench profiles: https://simbench.readthedocs.io/en/stable/profiles.html
-- SimBench grids: https://simbench.readthedocs.io/en/stable/networks.html
-- pandapower transformer model: https://pandapower.readthedocs.io/en/v3.2.1/elements/trafo.html
-- SimBench tap compatibility issue: https://github.com/e2nIEE/simbench/issues/69
-- scikit-learn MLPRegressor: https://scikit-learn.org/stable/modules/generated/sklearn.neural_network.MLPRegressor.html
-- SciPy SLSQP: https://docs.scipy.org/doc/scipy/reference/optimize.minimize-slsqp.html
-- Gradio sharing: https://www.gradio.app/guides/sharing-your-app
-- Gradio launch API: https://www.gradio.app/docs/gradio/blocks
+## Validation
+
+`python scripts/validate_project.py` checks safe Git refresh and local-edit protection, notebook/source validity, actual tap response, inverter capability, OLTC bounds, the fitted MLP derivatives, gain response, reactive scaling, live profile advancement, pause behavior, controller-off equivalence, and AC-screened live MPC.
+
+The authenticated Gradio server is also exercised for initial plots, slider reactions, presets, play/pause, timer updates, random scenarios, and controller switching. The frontend comprises three plots and one action table, with no diagnostic tabs. A real Colab share link still requires the user's connected runtime and Gradio's share service.

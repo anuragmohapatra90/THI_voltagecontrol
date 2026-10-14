@@ -1,230 +1,254 @@
-"""Standalone Gradio UI. Simulation state belongs to each browser session."""
-from dataclasses import dataclass, field
+"""The ADG_datadriven dashboard layout, with live SimBench snapshots in Gradio."""
+from dataclasses import dataclass,field
 from copy import deepcopy
-from pathlib import Path
-import tempfile, json, zipfile
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
+import networkx as nx
+import plotly.graph_objects as go
 import gradio as gr
-from grid_lab import GridLab, Config, PRESETS, MODES
-from plots import summary_table, comparison_figure, heatmap_figure
+from grid_lab import GridLab,PRESETS
+from live_control import snapshot_mpc
+
 
 @dataclass
-class Session:
-    lab: object = None
-    runs: dict = field(default_factory=dict)
-    run_cfg: object = None
-    metadata: dict = field(default_factory=dict)
+class LiveExperiment:
+    lab: object
+    t: int = 0
+    running: bool = False
+    net: object = None
+    previous: object = None
+    counter: int = 0
+    last_mode: str = ''
+    last: dict = field(default_factory=dict)
+    settings: tuple = (1.,1.,True,'MLP + MPC',1.,.1,1000.)
 
-    def ensure_lab(self,cfg):
-        if self.lab is None or any(getattr(self.lab.cfg,k)!=getattr(cfg,k) for k in ['grid_code','groups','retrofit_oltc']):
-            self.lab=GridLab(cfg)
+    def __post_init__(self):
+        self.reset()
+        pv=self.lab.profiles[('sgen','p_mw')].reindex(columns=self.lab.pv_ids).sum(axis=1).to_numpy()
+        self.t=int(np.argmax(pv))-4
+
+    def reset(self):
+        self.net=self.lab.new_net();self.previous=np.zeros(2*self.lab.ng)
+        self.counter=0;self.last_mode='';self.last={}
+
+    def new_scenario(self):
+        self.t=int(np.random.default_rng().integers(self.lab.steps));self.reset()
+
+    def sample(self,lf,pf,enabled,mode,weights=(1.,.1,1000.)):
+        lab=self.lab
+        lab.rating=lab.base_rating*max(1.,float(pf))
+        baseline=lab.new_net()
+        available=lab.set_profile(baseline,self.t,float(lf),float(pf))
+        lab.control(baseline,available,np.zeros(2*lab.ng))
+        y_base=lab.solve(baseline)
+        selected=mode if enabled else 'Off'
+        if selected!=self.last_mode:
+            self.reset();self.last_mode=selected
+        av=lab.set_profile(self.net,self.t,float(lf),float(pf))
+        info=lab.control(self.net,av,np.zeros(2*lab.ng))
+        if selected=='MLP + MPC':
+            y,u,info,flags=snapshot_mpc(lab,self.net,av,self.previous,weights)
+            self.previous=u
+        elif selected=='OLTC':
+            y,self.counter,moves,note=lab.oltc(self.net,self.counter)
+            self.previous=np.zeros(2*lab.ng)
+            flags={'safe':lab.violation(y)<=1e-7,'backup':False,'tap_moves':moves}
         else:
-            self.lab.cfg=cfg
-        return self.lab
+            self.net.trafo.loc[lab.tid,'tap_pos']=lab.tap0
+            y=lab.solve(self.net);flags={'safe':lab.violation(y)<=1e-7,'backup':False}
+        feasible=np.minimum(av,lab.rating)
+        pv=lab.net.sgen.loc[lab.pv_ids,'bus'].to_numpy()
+        actions=pd.DataFrame({'Bus':pv,'P (kW)':(self.net.sgen.loc[lab.pv_ids,'p_mw'].to_numpy()-feasible)*1000,
+                              'Q (kVar)':self.net.sgen.loc[lab.pv_ids,'q_mvar'].to_numpy()*1000})
+        actions=actions.groupby('Bus',as_index=False).sum().round(2)
+        self.last={'profile_step':self.t,'baseline':baseline,'controlled':deepcopy(self.net),
+                   'y_base':y_base.copy(),'y_controlled':y.copy(),'actions':actions,
+                   'mode':selected,'flags':flags,'info':info,
+                   'load_p_kw':float(baseline.load.p_mw.sum()*1000),
+                   'load_q_kvar':float(baseline.load.q_mvar.sum()*1000),
+                   'pv_kw':float(np.sum(available)*1000),
+                   'tap_pos':int(self.net.trafo.loc[lab.tid,'tap_pos'])}
+        return self.last
 
 
-def model_table(lab):
-    return pd.DataFrame((lab.training_report or {'Model':'Not trained yet'}).items(),columns=['Validation metric','Value']).astype(str)
+def grid_positions(net):
+    """Stable one-line layout from actual SimBench connections, not invented feeders."""
+    graph=nx.Graph();graph.add_nodes_from(int(i) for i in net.bus.index)
+    graph.add_edges_from((int(r.from_bus),int(r.to_bus)) for _,r in net.line[net.line.in_service].iterrows())
+    graph.add_edges_from((int(r.hv_bus),int(r.lv_bus)) for _,r in net.trafo[net.trafo.in_service].iterrows())
+    root=int(net.ext_grid.iloc[0].bus)
+    tree=nx.bfs_tree(graph,root);children={i:list(tree.successors(i)) for i in tree}
+    positions={};cursor=[0]
+    def place(node,depth):
+        if not children[node]:x=cursor[0];cursor[0]+=1
+        else:x=float(np.mean([place(c,depth+1) for c in children[node]]))
+        positions[node]=(x,-depth);return x
+    place(root,0)
+    return positions
 
 
-def network_note(lab):
-    retrofit='**Simulated OLTC retrofit:** HV-side ratio changer, ±8 taps, 1.25% step.' if lab.retrofit else 'Original declared OLTC is used.'
-    return f'**{lab.cfg.grid_code}** · {lab.nv} LV buses · {len(lab.pv_ids)} PV inverters · {lab.ng} groups\n\n{retrofit}'
+def voltage_profile(frame,lab):
+    net=frame['baseline'];bus=list(net.bus.index)
+    base=net.res_bus.loc[bus,'vm_pu'].to_numpy()
+    controlled=frame['controlled'].res_bus.loc[bus,'vm_pu'].to_numpy()
+    labels=[str(b) for b in bus]
+    fig=go.Figure()
+    fig.add_trace(go.Scatter(x=labels,y=base,mode='lines+markers',name='Uncontrolled',line={'color':'#ed9b2d','dash':'dash'},marker={'symbol':'circle'}))
+    if frame['mode']!='Off':
+        fig.add_trace(go.Scatter(x=labels,y=controlled,mode='lines+markers',name=frame['mode']+' Controlled',line={'color':'#16876b','width':3},marker={'symbol':'square'}))
+    for value in [lab.cfg.v_min,lab.cfg.v_max]:fig.add_hline(y=value,line_dash='dash',line_color='#d44b52')
+    fig.add_hline(y=1.,line_color='#aab3bc',line_width=.7)
+    values=np.r_[base,controlled]
+    fig.update_layout(template='plotly_white',height=330,margin={'l':55,'r':15,'t':15,'b':45},
+                      xaxis_title='Bus',xaxis_type='category',yaxis_title='Voltage (p.u.)',
+                      yaxis_range=[min(.88,float(values.min())-.01),max(1.12,float(values.max())+.01)],
+                      legend={'orientation':'h','y':1.14},uirevision='profile')
+    return fig
 
 
-def config_from_values(grid,retrofit,groups,vmin,vmax,thermal,horizon,forecast,maxcurt,delay):
-    if vmin>=vmax: raise gr.Error('Minimum voltage must be below maximum voltage.')
-    return Config(grid_code=grid,retrofit_oltc=bool(retrofit),groups=int(groups),v_min=float(vmin),v_max=float(vmax),
-                  thermal_limit=float(thermal),horizon=int(horizon),forecast=forecast,
-                  max_curtailment=float(maxcurt),oltc_delay_steps=int(delay))
+def network_heatmap(net,title,positions):
+    pv_buses=set(net.sgen.loc[net.sgen.in_service,'bus'].astype(int))
+    fig=go.Figure()
+    xx=[];yy=[]
+    for _,row in net.line[net.line.in_service].iterrows():
+        a,b=positions[int(row.from_bus)],positions[int(row.to_bus)]
+        xx.extend([a[0],b[0],None]);yy.extend([a[1],b[1],None])
+    fig.add_trace(go.Scatter(x=xx,y=yy,mode='lines',line={'color':'#9aa4ae','width':2},hoverinfo='skip',showlegend=False))
+    for _,row in net.trafo[net.trafo.in_service].iterrows():
+        a,b=positions[int(row.hv_bus)],positions[int(row.lv_bus)]
+        fig.add_trace(go.Scatter(x=[a[0],b[0]],y=[a[1],b[1]],mode='lines',line={'color':'#263c4b','width':4},hoverinfo='skip',showlegend=False))
+    buses=list(net.bus.index)
+    load_p=net.load.groupby('bus').p_mw.sum();load_q=net.load.groupby('bus').q_mvar.sum()
+    gen_p=net.sgen.groupby('bus').p_mw.sum()
+    data=[[int(b),float(net.res_bus.loc[b,'vm_pu']),float(load_p.get(b,0)*1000),
+           float(load_q.get(b,0)*1000),float(gen_p.get(b,0)*1000)] for b in buses]
+    fig.add_trace(go.Scatter(x=[positions[int(b)][0] for b in buses],y=[positions[int(b)][1] for b in buses],
+        mode='markers+text',text=[str(b) for b in buses],textposition='top center',customdata=data,
+        hovertemplate='Bus %{customdata[0]}<br>V %{customdata[1]:.4f} pu<br>Load P %{customdata[2]:.1f} kW<br>Load Q %{customdata[3]:.1f} kVar<br>PV %{customdata[4]:.1f} kW<extra></extra>',
+        marker={'symbol':['square' if int(b) in pv_buses else 'circle' for b in buses],
+                'size':[20 if int(b) in pv_buses else 15 for b in buses],
+                'color':[d[1] for d in data],'colorscale':'RdBu','cmin':.90,'cmax':1.10,
+                'line':{'color':'#41505a','width':1},'colorbar':{'title':'V (pu)','thickness':12}},
+        showlegend=False))
+    fig.update_layout(template='plotly_white',height=385,margin={'l':20,'r':35,'t':35,'b':20},title={'text':title,'font':{'size':15}},
+                      xaxis={'visible':False},yaxis={'visible':False},uirevision='grid-layout')
+    return fig
 
 
-def train_model(grid,retrofit,groups,samples,session,progress=gr.Progress()):
+def render(session,lf,pf,enabled,mode,wp,wq,wv):
+    frame=session.sample(lf,pf,enabled,mode,(wp,wq,wv))
+    positions=grid_positions(frame['baseline'])
+    profile=voltage_profile(frame,session.lab)
+    before=network_heatmap(frame['baseline'],'Uncontrolled',positions)
+    after=network_heatmap(frame['controlled'],frame['mode']+' Controlled' if enabled else 'Uncontrolled',positions)
+    q=frame['profile_step']%96
+    caption=f'{q//4:02d}:{(q%4)*15:02d} · Load {frame["load_p_kw"]:.1f} kW / {frame["load_q_kvar"]:.1f} kVar · PV {frame["pv_kw"]:.1f} kW'
+    safe='Grid Safe.' if frame['flags']['safe'] else 'Outside limits.'
+    if frame['mode']=='Off':action_note='Controller OFF.'
+    elif frame['mode']=='OLTC':action_note=f'Tap: {frame["tap_pos"]:+d} · {safe}'
+    else:action_note=safe+(' AC backup used.' if frame['flags']['backup'] else '')
+    loading=float(frame['y_controlled'][session.lab.nv:].max())
+    action_note+=f' Loading: {loading:.1f}%.'
+    return (session,profile,gr.Dataframe(value=frame['actions'],visible=frame['mode']=='MLP + MPC'),
+            before,after,caption,action_note)
+
+
+def update_configuration(lf,pf,enabled,mode,wp,wq,wv,session):
     try:
-        session=session or Session()
-        cfg=Config(grid_code=grid,retrofit_oltc=bool(retrofit),groups=int(groups))
-        lab=session.ensure_lab(cfg)
-        progress(0,desc='Generating AC cases')
-        report=lab.train(int(samples),lambda p:progress(p*.8,desc='Sampling actual SimBench profiles; MLP fitting follows'))
-        progress(1,desc='Ready')
-        warning=' The MLP reached its iteration limit; inspect its holdout errors.' if report['training_convergence_warning'] else ''
-        return session, f'**MLP ready.** Run a controller comparison.{warning}',model_table(lab),network_note(lab)
-    except Exception as exc:
-        raise gr.Error(f'Training failed: {exc}') from exc
+        session.settings=(lf,pf,enabled,mode,wp,wq,wv)
+        return render(session,*session.settings)
+    except Exception as exc:raise gr.Error(str(exc)) from exc
 
 
-def use_peak_day(grid,retrofit,groups,session):
-    try:
-        session=session or Session()
-        lab=session.ensure_lab(Config(grid_code=grid,retrofit_oltc=bool(retrofit),groups=int(groups)))
-        pv=lab.profiles[('sgen','p_mw')].reindex(columns=lab.pv_ids).sum(axis=1).to_numpy()
-        return session,int(np.argmax(pv)//96),network_note(lab),model_table(lab)
-    except Exception as exc: raise gr.Error(str(exc)) from exc
+def new_scenario(lf,pf,enabled,mode,wp,wq,wv,session):
+    session.new_scenario();return update_configuration(lf,pf,enabled,mode,wp,wq,wv,session)
 
 
-def detail_result(mode,session):
-    if not session or mode not in session.runs:
-        return None,pd.DataFrame(),pd.DataFrame()
-    steps,volts,actions=session.runs[mode]
-    fig=heatmap_figure(volts,session.run_cfg,mode+' · every LV bus')
-    plt.close(fig)
-    return fig,steps.round(5),actions.round(5)
+def tick(session):
+    if not session.running:return tuple(gr.skip() for _ in range(7))
+    session.t=(session.t+1)%session.lab.steps
+    return render(session,*session.settings)
 
 
-def export_run(session):
-    root=Path(tempfile.mkdtemp(prefix='gridlab_results_'))
-    path=root/'grid_experiment.zip'
-    with zipfile.ZipFile(path,'w',zipfile.ZIP_DEFLATED) as z:
-        z.writestr('metadata.json',json.dumps(session.metadata,indent=2))
-        z.writestr('summary.csv',summary_table(session.runs).to_csv(index=False))
-        for mode,(d,v,a) in session.runs.items():
-            folder=mode.replace(' ','_').replace('+','and')
-            for name,frame in [('steps',d),('bus_voltages',v),('actions',a)]:
-                z.writestr(f'{folder}/{name}.csv',frame.to_csv(index=False))
-    return str(path)
-
-
-def run_comparison(grid,retrofit,groups,vmin,vmax,thermal,horizon,forecast,maxcurt,delay,
-                   preset,lf,pf,day,quarter,steps,modes,session,progress=gr.Progress()):
-    try:
-        if not modes: raise gr.Error('Select at least one controller.')
-        session=session or Session()
-        cfg=config_from_values(grid,retrofit,groups,vmin,vmax,thermal,horizon,forecast,maxcurt,delay)
-        lab=session.ensure_lab(cfg)
-        if 'MLP + MPC' in modes and lab.model is None:
-            raise gr.Error('Train the MLP for this grid/grouping first, or deselect MLP + MPC.')
-        if not 0<=int(day)<=(lab.steps-1)//96: raise gr.Error('Day index is outside this profile year.')
-        runs={}
-        for j,mode in enumerate(modes):
-            progress(j/len(modes),desc=mode)
-            runs[mode]=lab.run(mode,preset,int(day)*96+int(quarter),int(steps),custom=(float(lf),float(pf)),
-                              progress=lambda p,j=j,mode=mode:progress((j+p)/len(modes),desc=mode))
-        session.runs=runs;session.run_cfg=cfg
-        session.metadata={**lab.metadata(),'preset':preset,'load_factor':float(lf),'pv_factor':float(pf),
-                          'start':int(day)*96+int(quarter),'steps':int(steps)}
-        failed=sum(int((~r[0].safe).sum()) for r in runs.values())
-        status=f'**Comparison complete.** {failed} controller-steps violate a configured limit or fail power flow.' if failed else '**Comparison complete.** All tested controller-steps satisfy the configured AC limits.'
-        status+=' Results remain the last completed run until you run again.'
-        fig=comparison_figure(runs,cfg);plt.close(fig)
-        first=modes[0]
-        detail,logs,actions=detail_result(first,session)
-        archive=export_run(session)
-        return (session,status,summary_table(runs).round(4),fig,model_table(lab),network_note(lab),
-                gr.Dropdown(choices=list(runs),value=first),detail,logs,actions,archive)
-    except gr.Error: raise
-    except Exception as exc: raise gr.Error(f'Experiment failed: {exc}') from exc
+def toggle_live(session):
+    session.running=not session.running
+    return session,gr.Timer(value=2.,active=session.running),gr.Button('⏸ Pause live PQ' if session.running else '▶ Play live PQ')
 
 
 CSS='''
-.gradio-container {max-width:1500px !important;margin:auto}
-#hero {background:linear-gradient(115deg,#0b2139,#124d58);color:white;border-radius:16px;padding:28px;margin-bottom:20px}
-#hero h1 {color:white;margin:6px 0;font-size:32px}
-#hero p {color:#d2ecee;margin:4px 0}
-#hero small {color:#7cded4;letter-spacing:2px}
-'''
-
-ASSUMPTIONS='''
-### Interpreting the comparison
-**Uncontrolled:** neutral tap, available PV P (subject to inverter clipping), PV Q = 0.
-
-**Automatic OLTC:** transformer LV-terminal voltage feedback, 0.99–1.01 pu deadband, at most one tap per 15-minute step. It controls voltage locally; every bus and thermal limit is assessed afterward.
-
-**MLP + MPC:** neutral tap, grouped PV curtailment and reactive-capability commands. A receding forecast horizon is optimized; the first action is AC-screened before application. Solver failures and backup actions are visible in the logs.
-
-PV factors above 1 represent added installed PV/inverter capacity; factors at or below 1 change available output only. Each scenario uses identical equipment across controllers. Clipping and commanded curtailment are recorded separately.
-
-Training uses an MLP with a linear skip connection. Calibration guard margins and simulation holdouts are empirical; they are not a universal safety guarantee. The grid is balanced and quasi-static, with no storage or dynamic frequency model. A perfect forecast uses future SimBench profiles; persistence holds current injections.
-
-The simulation remains on your Colab runtime. Keep it connected while using this browser tab. Changing the network, PV grouping, or retrofit assumption requires a new model.
+.gradio-container {max-width:1480px!important;margin:auto}
+#title {margin-bottom:18px;border-bottom:3px solid #16876b;padding-bottom:12px}
+#controls {background:#f6f8fa;border:1px solid #e4e9ed;border-radius:12px;padding:18px}
 '''
 
 
 def build_dashboard(lab=None):
     seed=lab or GridLab()
-    cfg=seed.cfg
-    pv=seed.profiles[('sgen','p_mw')].reindex(columns=seed.pv_ids).sum(axis=1).to_numpy()
-    peak_day=int(np.argmax(pv)//96)
-    with gr.Blocks(title='Grid Control Lab',analytics_enabled=False) as app:
-        state=gr.State(value=lambda:Session(lab=deepcopy(seed)))
-        gr.HTML('<div id="hero"><small>SIMBENCH · PANDAPOWER · MLP + MPC</small><h1>Grid Control Lab</h1><p>Test when transformer taps are sufficient—and when active inverter control is needed.</p></div>')
+    if seed.model is None:
+        print('Preparing MLP controller…',flush=True)
+        seed.train(1000)
+        print('MLP ready.',flush=True)
+    with gr.Blocks(title='Active Grid Control',analytics_enabled=False) as app:
+        state=gr.State(value=lambda:LiveExperiment(deepcopy(seed)))
+        timer=gr.Timer(2.,active=False)
+        gr.Markdown('# ⚡ AI-Driven Active Distribution Grid Control',elem_id='title')
         with gr.Row():
-            with gr.Column(scale=1,min_width=290):
-                gr.Markdown('### Network & scenario')
-                grid=gr.Dropdown(['1-LV-rural1--0-sw','1-LV-rural2--0-sw','1-LV-rural3--0-sw','1-LV-urban6--0-sw'],value=cfg.grid_code,label='SimBench LV grid')
-                retrofit=gr.Checkbox(cfg.retrofit_oltc,label='Allow simulated OLTC retrofit')
-                groups=gr.Slider(1,4,value=cfg.groups,step=1,label='PV control groups')
-                preset=gr.Dropdown(list(PRESETS),value='Normal',label='Loading preset')
-                lf=gr.Slider(.3,3,value=1,step=.05,label='Load P/Q multiplier')
-                pf=gr.Slider(0,3.5,value=1,step=.05,label='PV factor')
-                with gr.Accordion('Operating limits & controller settings',open=False):
-                    vmin=gr.Number(cfg.v_min,label='Minimum voltage (pu)',minimum=.8,maximum=1.)
-                    vmax=gr.Number(cfg.v_max,label='Maximum voltage (pu)',minimum=1.,maximum=1.2)
-                    thermal=gr.Slider(50,120,value=cfg.thermal_limit,step=1,label='Thermal limit (%)')
-                    horizon=gr.Slider(1,8,value=cfg.horizon,step=1,label='MPC horizon (15-minute steps)')
-                    forecast=gr.Dropdown(['Perfect','Persistence'],value=cfg.forecast,label='Forecast')
-                    maxcurt=gr.Slider(0,1,value=cfg.max_curtailment,step=.05,label='Maximum PV curtailment')
-                    delay=gr.Slider(1,4,value=cfg.oltc_delay_steps,step=1,label='OLTC delay (simulation steps)')
-                note=gr.Markdown(network_note(seed))
-            with gr.Column(scale=3,min_width=600):
-                with gr.Tab('Experiment'):
-                    with gr.Row():
-                        samples=gr.Dropdown([300,600,1000,2000],value=1000,label='MLP training samples')
-                        train=gr.Button('1 · Train MLP',variant='secondary')
-                    with gr.Row():
-                        day=gr.Number(peak_day,label='Day index (0-based)',precision=0,minimum=0,maximum=(seed.steps-1)//96)
-                        quarter=gr.Slider(0,95,value=36,step=1,label='Start quarter-hour (36 = 09:00)')
-                        steps=gr.Dropdown([8,24,48,96],value=24,label='Duration (15-minute steps)')
-                    peak=gr.Button('Use peak-PV day',size='sm')
-                    modes=gr.CheckboxGroup(MODES,value=MODES,label='Controllers to compare')
-                    run=gr.Button('2 · Run comparison',variant='primary')
-                    status=gr.Markdown('**Ready.** Train the MLP, or select OLTC / uncontrolled only.')
-                    summary=gr.Dataframe(label='Controller comparison',interactive=False)
-                    comparison=gr.Plot(label='Voltage, loading, taps & curtailment')
-                    archive=gr.File(label='Download experiment ZIP',interactive=False)
-                with gr.Tab('MLP validation'):
-                    gr.Markdown('Separate training, calibration, and test sets. Guard margins come from calibration; every applied active-control action is checked by AC power flow.')
-                    metrics=gr.Dataframe(model_table(seed),label='Model validation',interactive=False)
-                with gr.Tab('Detailed results'):
-                    inspect=gr.Dropdown(MODES,value=MODES[0],label='Inspect controller')
-                    heat=gr.Plot(label='Every LV bus')
-                    logs=gr.Dataframe(label='Step logs & solver status',interactive=False)
-                    actions=gr.Dataframe(label='PV group action fractions',interactive=False)
-                with gr.Tab('Assumptions'):
-                    gr.Markdown(ASSUMPTIONS)
-        preset.change(lambda name:PRESETS[name],inputs=preset,outputs=[lf,pf],api_name='set_preset',queue=False)
-        common=dict(concurrency_limit=1,concurrency_id='grid_simulation')
-        train.click(train_model,[grid,retrofit,groups,samples,state],[state,status,metrics,note],api_name='train_model',**common)
-        peak.click(use_peak_day,[grid,retrofit,groups,state],[state,day,note,metrics],api_name='peak_day',**common)
-        run.click(run_comparison,[grid,retrofit,groups,vmin,vmax,thermal,horizon,forecast,maxcurt,delay,
-                  preset,lf,pf,day,quarter,steps,modes,state],
-                  [state,status,summary,comparison,metrics,note,inspect,heat,logs,actions,archive],api_name='compare',**common)
-        inspect.change(detail_result,[inspect,state],[heat,logs,actions],api_name='details',**common)
+            with gr.Column(scale=1,min_width=290,elem_id='controls'):
+                gr.Markdown('### 1. Scenario Initialization')
+                random=gr.Button('🎲 Generate New Random Scenario')
+                preset=gr.Dropdown(list(PRESETS),value='Normal',label='Preset')
+                gr.Markdown('### 2. Operational Adjustments')
+                lf=gr.Slider(.3,3.,value=1.,step=.05,label='Load Scaling Factor')
+                pf=gr.Slider(0,3.5,value=1.,step=.05,label='PV Generation Factor')
+                enabled=gr.Checkbox(True,label='Enable Controller')
+                mode=gr.Radio(['OLTC','MLP + MPC'],value='MLP + MPC',label='Controller')
+                with gr.Group(visible=True) as gains:
+                    gr.Markdown('#### MPC Gains')
+                    wp=gr.Number(1.,minimum=0,label='Cost P (Active)',step=.1)
+                    wq=gr.Number(.1,minimum=0,label='Cost Q (Reactive)',step=.1)
+                    wv=gr.Number(1000.,minimum=0,label='Cost Voltage',step=100.)
+                simulate=gr.Button('Simulate This Configuration',variant='primary')
+                play=gr.Button('▶ Play live PQ')
+            with gr.Column(scale=3,min_width=680):
+                caption=gr.Markdown('')
+                with gr.Row():
+                    with gr.Column(scale=2):
+                        gr.Markdown('### Voltage Profile')
+                        profile=gr.Plot(show_label=False)
+                    with gr.Column(scale=1,min_width=220):
+                        gr.Markdown('### Actions')
+                        actions=gr.Dataframe(headers=['Bus','P (kW)','Q (kVar)'],interactive=False,show_label=False)
+                        action_note=gr.Markdown('')
+                gr.Markdown('### Voltage Heatmap')
+                with gr.Row():
+                    baseline=gr.Plot(show_label=False)
+                    controlled=gr.Plot(show_label=False)
+        inputs=[lf,pf,enabled,mode,wp,wq,wv,state]
+        outputs=[state,profile,actions,baseline,controlled,caption,action_note]
+        common={'concurrency_limit':1,'concurrency_id':'live_grid','show_progress':'hidden'}
+        gr.on([lf.input,pf.input,enabled.change,mode.change,wp.change,wq.change,wv.change,simulate.click],
+              update_configuration,inputs,outputs,api_name='react',trigger_mode='always_last',**common)
+        preset.change(lambda value:PRESETS[value],preset,[lf,pf],queue=False,api_name='preset').then(
+              update_configuration,inputs,outputs,trigger_mode='always_last',**common)
+        random.click(new_scenario,inputs,outputs,api_name='new_scenario',**common)
+        mode.change(lambda e,m:gr.Group(visible=e and m=='MLP + MPC'),[enabled,mode],gains,queue=False,api_visibility='private')
+        enabled.change(lambda e,m:gr.Group(visible=e and m=='MLP + MPC'),[enabled,mode],gains,queue=False,api_visibility='private')
+        play.click(toggle_live,state,[state,timer,play],queue=False,api_name='play_pause')
+        timer.tick(tick,state,outputs,api_name='tick',trigger_mode='once',**common)
+        app.load(update_configuration,inputs,outputs,api_name='initial_snapshot',**common)
     return app.queue(default_concurrency_limit=1,max_size=8)
 
 
 def launch_dashboard(app, *, share=True, auth=None):
-    """Start a real server, verify it locally, and return URL + login credentials."""
     import secrets
-    import requests
+    from urllib.request import build_opener,ProxyHandler
     credentials=auth or ('grid',secrets.token_urlsafe(16))
     try:
-        _,local_url,share_url=app.launch(
-            share=share,inline=False,prevent_thread_lock=True,
-            auth=credentials,auth_message='Sign in with the credentials printed by your Colab launch cell.',
-            show_error=True,quiet=False,css=CSS,
-            theme=gr.themes.Soft(primary_hue='teal',neutral_hue='slate'),
-        )
-        client=requests.Session()
-        client.trust_env=False  # The health check is exclusively to this local Python server.
-        response=client.get(local_url,timeout=15)
-        response.raise_for_status()
-        if share and not share_url:
-            raise RuntimeError('Gradio started locally but its share service did not return a browser URL. '
-                               'Keep the Colab runtime connected and rerun the launch cell. '
-                               'If it fails again, inspect the share/tunnel error printed above.')
-        return share_url if share else local_url, credentials
-    except Exception:
-        app.close()
-        raise
+        _,local_url,share_url=app.launch(share=share,inline=False,prevent_thread_lock=True,
+            auth=credentials,show_error=True,quiet=False,css=CSS,
+            theme=gr.themes.Soft(primary_hue='emerald',neutral_hue='slate'))
+        with build_opener(ProxyHandler({})).open(local_url,timeout=15) as response:
+            if response.status!=200:raise RuntimeError('Dashboard health check failed.')
+        if share and not share_url:raise RuntimeError('No Gradio share URL was returned. Reconnect Colab and rerun launch.')
+        return share_url if share else local_url,credentials
+    except Exception:app.close();raise

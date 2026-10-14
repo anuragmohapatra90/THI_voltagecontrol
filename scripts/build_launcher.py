@@ -13,7 +13,7 @@ md('''# Grid Control Lab · GitHub-backed launcher
 
 This notebook loads the project directly from GitHub. Bookmark this GitHub-linked Colab page; future merged changes are fetched by running the checkout cell again. No source modules are embedded here.
 
-**Run all → Open dashboard → Train MLP → Run comparison.** Use a CPU runtime. Keep Colab connected while using the separate dashboard tab.
+**Run all → Open dashboard → adjust PQ or press Play live PQ.** Use a CPU runtime. Keep Colab connected while using the separate dashboard tab.
 
 After a PR is merged, restart the session and run all to load the latest code cleanly. An open dashboard does not update itself in the middle of an experiment. The exact fetched commit is printed and exported with experiment results.''')
 md('''## 1. Fetch current project source
@@ -80,7 +80,7 @@ md('''## 3. Load the fetched modules and verify the grid
 Modules are loaded from the refreshed checkout, including when you reuse an already-open notebook.''')
 code('''import importlib, os, sys
 os.chdir(PROJECT_DIR)
-for name in ['grid_lab','plots','dashboard','checks']:
+for name in ['grid_lab','plots','live_control','dashboard','checks']:
     sys.modules.pop(name,None)
 sys.path.insert(0,str(PROJECT_DIR))
 importlib.invalidate_caches()
@@ -90,10 +90,12 @@ from dashboard import build_dashboard,launch_dashboard
 import pandas as pd
 from IPython.display import display
 lab=GridLab(Config())
-display(pd.DataFrame(run_checks(lab).items(),columns=['Check','Result']))
-print('Running source commit:',SOURCE_COMMIT)''')
+print('Preparing grid and MLP controller…',flush=True)
+lab.train(1000)
+run_checks(lab)
+print('Grid and MLP ready. Source commit:',SOURCE_COMMIT)''')
 md('''## 4. Open the dashboard in another tab
-The server continues in background threads after this cell finishes. Use the printed link and credentials. Train the MLP inside the page; OLTC and uncontrolled runs can be used immediately.
+The server continues in background threads after this cell finishes. Use the printed link and credentials. The model is prepared above. Change the load/PV sliders for immediate reaction, or press Play live PQ to advance the profiles.
 
 If a new commit has been merged, restart the session and run all before launching a new comparison. Reopening the same GitHub-Colab link also loads the latest notebook content.''')
 code('''from IPython.display import HTML,display
@@ -113,7 +115,7 @@ md('''## Development workflow
 
 The Colab URL remains the same. Changes do not require downloading or uploading replacement notebooks. Saving a Drive copy creates an independent notebook; use the GitHub-linked version for the shared project.
 
-Open the repository README for source documentation and `MODEL.md` for simulation assumptions. Experiment ZIP metadata records the GitHub repository and fetched commit.''')
+Open the repository README for source documentation and `MODEL.md` for simulation assumptions. The backend retains the GitHub repository and fetched commit for reproducibility.''')
 nb.cells=cells
 nbf.validate(nb)
 nbf.write(nb,ROOT/'Grid_Control_Lab.ipynb')

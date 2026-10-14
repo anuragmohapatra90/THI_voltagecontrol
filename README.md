@@ -1,60 +1,36 @@
-# Grid Control Lab
-
-SimBench PQ scenarios, automatic OLTC, and MLP + MPC active inverter control, with a separate-tab Gradio dashboard.
+# Active Grid Control
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/anuragmohapatra90/THI_voltagecontrol/blob/main/Grid_Control_Lab.ipynb)
 
-This badge opens the repository-backed launcher on `main` after the setup PR is merged. This repository is private, so the launcher defaults to authenticated checkout.
-
-## One source of truth
-
-The source lives in GitHub as ordinary Python files. The notebook is a small launcher: fetch source, install dependencies, verify the model, and start the dashboard. It does not embed copies of the source files.
-
-Future changes use a branch and pull request. After a PR is merged into `main`, the same Colab link opens the updated notebook. Every run of the checkout cell also fetches the newest `main` source, so an already-open launcher gets updated Python code when rerun. Nothing needs to be uploaded manually after initial repository setup.
-
-An already-running dashboard does not hot-reload from GitHub. Rerun the checkout/install/launch cells, or use **Runtime → Restart session and run all**. This closes the previous app and loads the new source. The launcher prints the exact commit SHA, which is included in experiment metadata. Restarting creates a new temporary Gradio link and resets models unless you saved them separately.
-
-Do not save a separate copy of the notebook into Drive for routine use; bookmark the repository's **Open in Colab** link. A Drive copy is independent of GitHub, although this launcher will still fetch updated Python files if its checkout cell remains intact.
+The simple dashboard layout from [ADG_datadriven](https://github.com/anuragmohapatra90/ADG_datadriven), rebuilt in Gradio: scenario/scaling controls on the left, voltage profile and actions above two network voltage heatmaps. Simulation uses SimBench PQ profiles with automatic OLTC or MLP + MPC control.
 
 ## Run
 
-1. Open the Colab badge. Use a CPU runtime.
-2. Run all cells. The checkout defaults to `main`.
-3. Open the printed dashboard URL in another tab and sign in using the generated credentials.
-4. Train the MLP, select loading presets, and run controller comparisons.
+1. Open the Colab badge and **Run all**. The MLP is prepared automatically once at startup.
+2. Open the printed dashboard link in another tab.
+3. Change load/PV sliders: the voltage profile, actions, and heatmaps react automatically. Use the preset selector or generate a new random scenario.
+4. Choose **OLTC** or **MLP + MPC**. The enable switch compares controller-on versus controller-off operation. The three MPC gain inputs affect the P/Q/voltage objective, as in the original project.
+5. **Play live PQ** advances actual SimBench profiles; **Pause** holds the current scenario. Each displayed sample is a 15-minute profile step, played at an accelerated two-second display interval.
 
-The Colab runtime must remain connected while the dashboard runs. The endpoint requires a password; credentials are generated in memory at launch, not committed to GitHub.
+Keep Colab connected. After merging a PR, restart the Colab session and run all to fetch the latest `main` source. The same Colab URL works every time; no replacement notebook uploads.
 
-Public repositories work without GitHub credentials. For a private repository, authorize GitHub access when opening it in Colab, set `PRIVATE_REPO=True`, and provide a read-only token for this repository through the Colab secret `GITHUB_TOKEN` or the hidden prompt. The token is passed to Git through environment configuration only; it is not placed in remote URLs, files, notebook source, or Git command arguments.
+This repository is private. The checkout reads the Colab secret `GITHUB_TOKEN` or a hidden prompt for a read-only token scoped to this repository. It is not saved in Git URLs or project files. The dashboard's temporary link has a generated login password printed in Colab.
 
-## Review a PR before merging
+## Experiment
 
-In the notebook's checkout settings, set `GIT_REF = "refs/pull/123/head"` to test PR #123 from the same repository. Restore `GIT_REF = "main"` for the stable project. A branch name, tag, or commit SHA also works. Experiment metadata records the actual fetched commit.
+A random scenario is an actual SimBench profile timestamp. Scaling changes load P/Q and PV availability; uncontrolled and controlled runs receive identical injections. The controller and its actions update on every evaluated snapshot. OLTC taps persist during playback and are limited to one movement per sample. The live MLP-MPC uses a one-step horizon and the original gain-weighted P/Q/voltage objective, with inverter capability limits and AC verification.
 
-## Repository files
+The maps show the actual SimBench network. Circles are load buses; squares mark PV buses. Both maps use the same voltage color scale. Active actions are signed changes relative to available PV (negative P = curtailment); Q is inverter reactive injection.
 
-| File | Purpose |
-|---|---|
-| `Grid_Control_Lab.ipynb` | Stable Colab launcher |
-| `grid_lab.py` | SimBench simulation, OLTC, MLP, and MPC |
-| `dashboard.py` | Standalone Gradio app and authenticated launcher |
-| `plots.py` | Scientific plots and summaries |
-| `checks.py` | Tap, inverter capability, and controller checks |
-| `requirements.txt` | Pinned dependencies |
-| `scripts/colab_checkout.py` | Safe Git refresh logic used by the notebook |
-| `scripts/validate_project.py` | Notebook, source, and physical smoke checks |
-| `MODEL.md` | Scenario definitions and scientific assumptions |
+Model settings, source version, and longer offline experiments remain in Python; they are not extra dashboard pages. See [MODEL.md](MODEL.md) for scientific assumptions, the explicitly simulated OLTC retrofit, forecast/capability limits, and holdout validation.
 
 ## Development
 
-Use Python 3.12. Install `requirements.txt` and `nbformat==5.10.4`, then run:
+Edit the Python files on a branch and open a PR. Changes load through the existing Colab launcher after merge. For bootstrap changes, run `python scripts/build_launcher.py` and commit the generated notebook too.
 
 ```bash
+pip install -r requirements.txt nbformat==5.10.4
 python scripts/validate_project.py
 ```
 
-Open a branch and PR for changes. Describe the grid/controller behavior changed and the validation run. No notebook regeneration is needed for changes to the Python modules. If bootstrap logic changes, run `python scripts/build_launcher.py` and commit the resulting notebook alongside it. This keeps the launcher cell synchronized with its reviewed checkout implementation.
-
-The local checkout helper refuses to overwrite modified tracked source. It also refuses a nonempty unrelated directory or a checkout belonging to another repository.
-
-See [MODEL.md](MODEL.md) for the explicit OLTC retrofit, inverter ratings, forecast assumptions, limits, and validation interpretation.
+CI checks the launcher, safe Git refresh, physical model, reactive controls, live PQ advancement, pause behavior, gain response, and single-step MLP-MPC. The browser frontend uses a timer rather than waiting for a full time-series batch. Display latency depends on the runtime; rapid slider changes retain the latest input, and timer requests do not accumulate while a frame is being computed.
