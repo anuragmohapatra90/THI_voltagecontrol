@@ -23,6 +23,8 @@ def check_browser(url):
             return gd && gd.data && gd.data[0]?.name==='Uncontrolled' && gd.data[2]?.name==='MLP + MPC';
         }""",timeout=60000)
         assert page.get_by_role('button',name='Load new scenario',exact=True).count()==1
+        assert page.get_by_role('heading',name='Voltage control for ADG',exact=True).count()==1
+        assert 'OLTC tap position:' in page.locator('#controls').inner_text()
         assert page.get_by_text('Username',exact=True).count()==0
         screenshot_log(page)
         for width,height in [(1440,900),(1366,768),(1280,720),(1280,650)]:

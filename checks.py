@@ -34,6 +34,7 @@ def run_checks(lab=None):
         assert (a.iloc[:,:lab.ng].to_numpy()>=-1e-8).all()
         assert (a.iloc[:,:lab.ng].to_numpy()<=lab.cfg.max_curtailment+1e-8).all()
         assert (np.abs(a.iloc[:,lab.ng:].to_numpy())<=1+1e-8).all()
-    return {'tap_voltage_change_pu':delta,'inverter_capability':'passed','OLTC_step_and_bounds':'passed','PQ_power_flow':'passed','MLP_MPC':'passed' if lab.model is not None else 'train first'}
+    return {'tap_voltage_change_pu':delta,'inverter_capability':'passed','OLTC_step_and_bounds':'passed','PQ_power_flow':'passed',
+            'MLP_MPC':'ADG controller prepared' if getattr(lab,'voltage_controller',None) is not None else ('legacy offline checks passed' if lab.model is not None else 'prepare controller first')}
 
 if __name__=='__main__': print(run_checks())

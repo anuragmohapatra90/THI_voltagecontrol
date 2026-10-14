@@ -30,7 +30,7 @@ def check_checkout():
 
 
 def main():
-    for path in list(ROOT.glob('*.py'))+list((ROOT/'scripts').glob('*.py')):
+    for path in ROOT.rglob('*.py'):
         py_compile.compile(str(path),doraise=True)
     notebook=nbformat.read(ROOT/'Grid_Control_Lab.ipynb',as_version=4)
     nbformat.validate(notebook)

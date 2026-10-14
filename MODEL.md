@@ -1,55 +1,54 @@
-# Experiment and model assumptions
+# Voltage control for ADG: experiment assumptions
 
-## Reference experiment
+## MLP and MPC from the reference project
 
-The dashboard follows `anuragmohapatra90/ADG_datadriven`: scenario/scaling/gain setup on the left, a voltage profile and action table above network voltage heatmaps on the right. The voltage profile overlays all three cases: uncontrolled, best OLTC, and MLP + MPC. The grid and absolute PQ injections come from SimBench.
+The dashboard controller ports the structure of [ADG_datadriven](https://github.com/anuragmohapatra90/ADG_datadriven):
 
-The default network is `1-LV-rural1--0-sw`. Date/time comes from the original SimBench profile calendar: 1 January–31 December 2016, including leap day. Load new scenario samples within the selected mode, excluding the currently selected row when the bucket has other entries. Custom uses all 35,136 fifteen-minute rows. Custom scalers and MPC gains retain that timestamp and immediately recalculate all three cases. There is no playback timer or controller-selection switch.
+- `active_grid/mlp_model.py`: `VoltageEstimator`, with **2×bus-count inputs → 64 ReLU → 32 ReLU → bus-count outputs**.
+- Input order is **all bus net P, then all bus net Q**. Positive means consumption: aggregate load minus aggregate generation. Bus IDs are explicitly mapped because SimBench includes non-contiguous IDs such as 42.
+- `active_grid/training.py`: StandardScaler for inputs/outputs; Adam learning rate 0.001; MSE loss; batch size 32; 100 epochs. A 3,000-sample AC campaign is split 80/20 for training/validation, with a separate 500-sample test portion. Model weights and scalers are retrained for this actual SimBench network; the reference project's weights belong to a different topology and are not reused.
+- `active_grid/controller.py`: `MLP_MPC_Controller.predict_voltages()` subtracts signed DER P/Q actions from current net consumption. `get_optimal_setpoints()` starts at zero and solves the reference one-step SLSQP objective with independent bounded P/Q variables at each DER bus.
 
-## Presets and injections
+`J = wP * sum(P_action_MW²) + wQ * sum(Q_action_MVAr²) + wV * sum(voltage_violation_pu²)`
 
-| Preset | Load P/Q factor | PV factor |
-|---|---:|---:|
-| High PV | 0.55 | 8.00 |
-| High Load | 7.00 | 0.10 |
-| Custom | User-defined (default 1.00) | User-defined (default 1.00) |
+Voltage limits are 0.95–1.05 pu. The reference action bounds are ±0.05 MW and ±0.05 MVAr per DER. PyTorch autograd supplies the objective derivative and inference uses double precision to avoid finite-difference cancellation in float32. This changes numerical evaluation, not the objective or action bounds. SLSQP uses the reference `ftol=1e-4`.
 
-High PV starts with the upper 10% of annual total PV injections. High Load starts with the upper 10% of total load P, additionally requiring PV at or below 10% of its annual peak. Each pool contributes up to 256 temporally distributed candidate rows plus its 16 strongest injection rows. Neutral-tap AC screening retains only converged High PV rows with max LV voltage ≥1.07 pu and High Load rows with min LV voltage ≤0.93 pu. The finite pre-filtered buckets are cached at startup. Sampling is uniform within the retained bucket; it does not represent annual event frequency. Fixed preset factors cannot be changed by UI/API scaler inputs. Custom applies user scalers to original profiles without stress filtering.
+The previous tanh/Ridge surrogate, grouped PV-curtailment controls, hard calibrated voltage/thermal constraints, and coarse replacement search are no longer used by the dashboard. The separate older offline `GridLab.train()/run()` routines remain in Python and are not the frontend controller.
 
-`simbench.get_absolute_values(..., profiles_instead_of_study_cases=True)` supplies the load/generator shapes. Load P and Q scale together. PV Q is zero in the baseline and is actively controlled in the MLP-MPC case. Other sgens retain their PQ profiles. No artificial measurement noise is added to the AC validation voltages.
+## Physical actuation and validation
 
-PV factors above one represent added installed PV/inverter capacity. The original apparent-power rating is at least 1.10 × nominal PV P, multiplied by `max(1, PV factor)`. Factors at or below one reduce availability without reducing installed capacity. Baseline and controlled cases use identical equipment within the same scenario. Inverter clipping above the rating is separate from commanded curtailment.
+As in the original ADG experiment, the controller acts through **flexible signed DER P/Q injections**. The default uses each actual SimBench PV bus as a control location. A separate 100 kVA controllable sgen is added there, with ±50 kW/±50 kVar limits. It is zero in uncontrolled and OLTC cases; MPC applies its optimised signed setpoints. It is distinct from the irradiance-driven PV injection. Positive P/Q injects power, negative P/Q absorbs it. The action table reports these signed actions, matching the reference.
 
-## Controls
+This models flexible DER capacity, including the ability to supply active power when irradiance is low. It is an explicitly added simulation actuator; it is not a claim that an ordinary PV array supplies extra energy at night. No storage energy-state model is included in this snapshot experiment. Existing SimBench load and PV profiles remain identical across the three cases.
 
-- **Uncontrolled:** neutral transformer tap, available/clipped PV P, PV Q = 0.
-- **Best OLTC:** every allowed tap is evaluated with actual AC power flow at identical PQ. The chosen tap minimizes maximum LV voltage-limit violation, then mean squared LV deviation from 1 pu, then overall grid-limit violation and distance from neutral. This exhaustive discrete benchmark shows the best achievable settled tap, not a single delayed move. Thermal compliance is checked independently; correcting voltage cannot remove a severe active-power overload. The separate one-step automatic OLTC routine is retained for offline time-series experiments.
-- **MLP + MPC:** neutral tap, grouped curtailment and reactive-capability fractions. Each inverter satisfies `P² + Q² ≤ S²`. Positive pandapower sgen Q injects reactive power.
+All displayed voltages are actual pandapower AC results **after applying the optimiser's actions**, not MLP predictions. If an applied action fails AC convergence, zero commands are restored and the failure is recorded. There is no alternate grid search that silently replaces the MLP-MPC proposal. Solver status, predicted voltages, applied actions, and held-out accuracy remain available in backend metadata, without extra dashboard panels.
 
-The original LV transformer is not declared as an OLTC. The simulation explicitly models an OLTC retrofit: HV-side ratio changer with ±8 taps at 1.25% per tap. This is additional simulated equipment, not original SimBench capability. The assumption is kept in code/model documentation rather than repeated as a dashboard panel.
+The optimisation is voltage-focused, as in the reference: thermal loading is not a penalty or hard constraint. The sidebar therefore explicitly reports **voltage** limit compliance. Line/transformer loading is still calculated and available in results. Good voltage regulation alone does not establish that severe loading has been resolved. Soft voltage penalties and finite actuator limits can leave residual violations.
 
-The live MPC is a one-step receding controller for the current PQ snapshot, matching the old experiment's interaction. Its gain-weighted objective is
+## Scenarios and comparison
 
-`J = wP * sum(delta_P_MW²) + wQ * sum(Q_MVAr²) + wV * sum(voltage_violation_pu²)`
+The network is `1-LV-rural1--0-sw`, using the original SimBench calendar (2016, including leap day).
 
-plus the corresponding normalized thermal-violation penalty. The voltage and thermal constraints use empirical calibration margins. Active actions shown in the table are signed changes from feasible available PV: negative P means curtailment. Q is inverter reactive injection.
+| Mode | Load P/Q scale | PV scale | Sampling |
+|---|---:|---:|---|
+| High PV | 0.55 | 8.00 | High-generation annual profiles with max LV voltage ≥1.07 pu |
+| High Load | 7.00 | 0.10 | High-demand/low-PV annual profiles with min LV voltage ≤0.93 pu |
+| Custom | User-defined | User-defined | All 35,136 timestamps |
 
-A direct derivative of the fitted tanh/linear-skip MLP is used by SLSQP to keep snapshot updates responsive. Applied actions are checked against actual pandapower AC results. Out-of-domain/failed/unsafe proposals trigger a finite AC-screened backup search. If no screened action meets all limits, the least-violating converged action is applied and the dashboard says Outside limits. This search is not a proof of infeasibility or a universal safety guarantee.
+High PV starts with the upper 10% of annual total PV P. High Load starts with the upper 10% of total load P and requires PV ≤10% of its annual peak. Up to 256 temporally distributed rows plus 16 injection extremes are AC-screened per pool. Only converged, voltage-stressed rows enter the bucket. Load new scenario stays within that bucket and excludes the current row when alternatives exist. Custom scalers and MPC gains keep the timestamp fixed.
 
-Each snapshot starts both controllers from the same neutral-tap baseline. The MPC starts from zero commands, avoiding dependence on the previous randomly selected scenario. Scaling and gain changes retain the timestamp. The offline `GridLab.run()` engine remains available for longer-horizon experiments; its settings are not exposed as dashboard tabs.
+Training includes these stress buckets, broader annual profiles with load factors 0.3–8 / PV factors 0–10, and random signed DER actions. No artificial sensor noise is added to targets or displayed voltages.
 
-## Learning and assessment
+PV factors above one represent added installed PV and inverter capacity. Original PV apparent-power ratings scale with `max(1, PV factor)` and are at least 1.10×nominal PV P. Original PV runs at available/clipped P and Q=0 in all three cases; the separate flexible DER resource supplies the MPC actions.
 
-The default model is prepared automatically once before opening the app, using 1,000 AC samples. It has two 64-unit tanh layers with a Ridge linear skip connection. Inputs are detailed load/sgen P/Q and tap position. Outputs are all monitored LV voltages, energized line loading, and transformer loading.
+**Uncontrolled:** neutral tap and zero control-DER actions. **Best OLTC:** exhaustive AC evaluation of every allowed tap at identical PQ, minimizing maximum voltage-limit violation, then nominal-voltage deviation, overall grid-limit violation, and distance from neutral. **MLP + MPC:** neutral tap plus the reference signed-PQ optimiser. The chosen OLTC tap position is displayed explicitly.
 
-Training uses full-year shapes, extra high-PV/high-load samples, load factors 0.3–8, PV factors 0–10, feasible inverter actions, and tap positions. Seeded splits are 70% train, 15% calibration, and 15% test. Error reports remain available in `lab.training_report`; they are not extra frontend tables. These simulated holdouts do not establish generalization to another topology or real equipment.
+The LV transformer requires an explicitly simulated OLTC retrofit: HV-side ratio changer, ±8 taps at 1.25% per tap. The original SimBench network does not declare that capability. The OLTC result is the best settled tap for the snapshot, not a seconds-scale actuator simulation.
 
-Safe means all monitored LV voltages are within 0.95–1.05 pu and all monitored lines/transformers are at or below 100% loading. Balanced, constant-PQ AC power flow is used; no storage, phase imbalance, frequency dynamics, communications, or seconds-scale equipment response is modeled. SimBench's source voltage is retained. `tap_changer_type='Ratio'` is explicitly set, and missing ZIP-load coefficients are treated as constant PQ.
+Balanced constant-PQ AC power flow is used. No phase imbalance, frequency dynamics, communications, storage dynamics, or real hardware timing is modeled. The first project supports one two-winding transformer and PV-labelled sgens without original gen/storage elements.
 
-The first implementation supports LV grids with one two-winding transformer and PV-labelled sgens, without gen or storage elements. Model/grid settings are edited in `Config` or Python code. The backend metadata retains the source repository and fetched commit.
+## Checks
 
-## Validation
+CI verifies the reference controller's net-PQ sign mapping, objective derivative, voltage-gain response, independent actuator limits, and **actual AC voltage-violation reduction** across six High PV and six High Load snapshots. It also verifies every stress-bucket row, annual calendar/custom sampling, same-PQ comparison, exhaustive tap selection, Git refresh/launcher behavior, and login-free Gradio event transport.
 
-`python scripts/validate_project.py` checks safe Git refresh and local-edit protection, notebook/source validity, actual tap response, inverter capability, all three cases at identical PQ, exhaustive best-tap selection, the fitted MLP derivatives, gain response, reactive scaling, the calendar and full-year Custom sampling, every stress-bucket row, preset-restricted resampling, and AC-screened MPC.
-
-The Gradio server is exercised without authentication for initial results, three traces on the same voltage axes, slider reactions that retain the date/time, and a new dated scenario. CI additionally uses Chromium at 1440×900, 1366×768, and 1280×720 to check setup left/results right, fully visible controls and graphs, and no page scrolling. A real Colab share link still requires the user's connected runtime and Gradio's share service.
+Chromium checks the renamed heading, explicit tap readout, three overlaid traces, reactive dated scenarios, and the fully visible no-scroll desktop layout down to 1280×650. Model/grid settings and metadata remain in Python, not extra frontend tabs.
