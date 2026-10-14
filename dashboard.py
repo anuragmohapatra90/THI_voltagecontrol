@@ -185,8 +185,8 @@ html,body {margin:0;height:100%;overflow:hidden}
 #title {flex:0 0 auto!important;margin:0!important;padding-bottom:8px;border-bottom:2px solid #16876b}
 #title h1 {font-size:22px;margin:0;line-height:1.3}
 #workspace {flex:1!important;min-height:0!important;flex-wrap:nowrap!important;gap:16px}
-#controls {flex:0 0 290px!important;min-width:290px!important;max-width:290px!important;min-height:0;gap:6px;
- background:#f6f8fa;border:1px solid #e4e9ed;border-radius:10px;padding:12px;box-sizing:border-box}
+#controls {flex:0 0 290px!important;min-width:290px!important;max-width:290px!important;min-height:0;gap:4px;
+ background:#f6f8fa;border:1px solid #e4e9ed;border-radius:10px;padding:8px;box-sizing:border-box}
 #controls h3 {font-size:15px;margin:0}
 #controls .prose p {margin:0;font-size:13px}
 #comparison {flex:1!important;min-width:0!important;min-height:0!important;height:100%;padding:0!important;border:0!important}
