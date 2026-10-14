@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+.venv/
+.env
+*.pkl
+*.joblib
+*.zip
+*.log
+gradio/
+*.png
+.ipynb_checkpoints/
