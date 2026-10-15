@@ -1,17 +1,17 @@
 """ADG's sidebar/profile/actions/heatmap layout, comparing all three controls."""
 from dataclasses import dataclass,field
-from copy import deepcopy
+from copy import deepcopy,copy
 import numpy as np
-import pandas as pd
 import networkx as nx
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import gradio as gr
-import pandapower as pp
 from grid_lab import GridLab
 from active_grid import config
 from active_grid.oltc import best_oltc,oltc_score
 from live_control import prepare_controller,voltage_violation
+from dashboard_diagnostics import control_deltas,voltage_diagnostics,diagnostics_html
+from dashboard_assets import CSS,LAYOUT_JS,BEGIN_SCENARIO_JS,END_SCENARIO_JS
 
 
 
@@ -41,15 +41,17 @@ class ScenarioExperiment:
         oltc,y_oltc,tap=best_oltc(lab,baseline)
         mpc=deepcopy(baseline)
         y_mpc,p_set,q_set,flags=controller.run_snapshot(lab,mpc,weights)
-        actions=pd.DataFrame({'Bus':list(p_set),'P (kW)':[1000*p_set[b] for b in p_set],
-            'Q (kVar)':[1000*q_set[b] for b in p_set]}).round(2)
+        actions,at_limit=control_deltas(baseline,mpc,controller.der_buses)
+        estimates=voltage_diagnostics(flags['predicted_voltages'],mpc,controller.bus_ids)
         self.last={'scenario_id':self.scenario_id,'scenario_seed':self.base['seed'],
             'hour':self.base['hour'],'baseline':baseline,'oltc':oltc,'mpc':mpc,
             'y_base':y_base,'y_oltc':y_oltc,'y_mpc':y_mpc,'tap_pos':tap,
-            'actions':actions,'flags':flags,'load_factor':float(lf),'pv_factor':float(pf),
+            'actions':actions,'at_limit':at_limit,'voltage_estimates':estimates,'flags':flags,'load_factor':float(lf),'pv_factor':float(pf),
             'gross_load_p_kw':float(self.base['load_p'].sum()*lf*1000),
             'load_q_kvar':float(self.base['load_q'].sum()*lf*1000),
-            'pv_kw':float(self.base['pv'].sum()*pf*1000)}
+            'pv_kw':float(self.base['pv'].sum()*pf*1000),
+            'pv_buses':sorted(set(map(int,lab.net.sgen.bus))),
+            'pv_bus_kw':{int(b):float(self.base['pv'][b]*pf*1000) for b in lab.net.bus.index}}
         return self.last
 
 
@@ -68,7 +70,7 @@ def grid_positions(net):
     return positions
 
 
-def add_heatmap(fig,net,positions,column):
+def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
     xx=[];yy=[]
     for table,a_name,b_name in [(net.line,'from_bus','to_bus'),(net.trafo,'hv_bus','lv_bus')]:
         for _,r in table[table.in_service].iterrows():
@@ -76,28 +78,35 @@ def add_heatmap(fig,net,positions,column):
             xx.extend([a[0],b[0],None]);yy.extend([a[1],b[1],None])
     fig.add_trace(go.Scatter(x=xx,y=yy,mode='lines',line={'color':'#9aa4ae','width':1.5},
         hoverinfo='skip',showlegend=False),row=2,col=column)
-    buses=list(net.bus.index);pv_buses=set(config.DER_BUSES)
-    load_p=net.load.groupby('bus').p_mw.sum();load_q=net.load.groupby('bus').q_mvar.sum()
-    gen_p=net.sgen.groupby('bus').p_mw.sum()
-    data=[[int(b),float(net.res_bus.loc[b,'vm_pu']),float(load_p.get(b,0)*1000),
-           float(load_q.get(b,0)*1000),float(gen_p.get(b,0)*1000)] for b in buses]
+    buses=list(net.bus.index);pv_buses=set(frame['pv_buses']);der_buses=set(config.DER_BUSES)
+    limited=set(frame['at_limit'].loc[frame['at_limit'][['ΔP','ΔQ']].any(axis=1),'Bus']) if is_mpc else set()
+    load=net.load.groupby('bus')[['p_mw','q_mvar']].sum()
+    generation=net.sgen.groupby('bus')[['p_mw','q_mvar']].sum()
+    data=[]
+    for b in buses:
+        data.append([int(b),float(net.res_bus.loc[b,'vm_pu']),float(load.p_mw.get(b,0)*1000),
+            float(load.q_mvar.get(b,0)*1000),frame['pv_bus_kw'].get(int(b),0.),
+            float(generation.p_mw.get(b,0)*1000),float(generation.q_mvar.get(b,0)*1000),
+            'PV + control DER' if b in der_buses else ('PV site' if b in pv_buses else 'Grid supply'),
+            'LIMIT REACHED' if b in limited else ''])
     fig.add_trace(go.Scatter(x=[positions[int(b)][0] for b in buses],y=[positions[int(b)][1] for b in buses],
-        mode='markers+text',text=[str(b) for b in buses],textposition='top center',textfont={'size':9},customdata=data,
-        hovertemplate='Bus %{customdata[0]}<br>V %{customdata[1]:.4f} pu<br>Base net P %{customdata[2]:.1f} kW<br>Base Q %{customdata[3]:.1f} kVar<br>DER P %{customdata[4]:.1f} kW<extra></extra>',
-        marker={'symbol':['square' if int(b) in pv_buses else 'circle' for b in buses],
-            'size':[12 if int(b) in pv_buses else 9 for b in buses],
+        mode='markers+text',text=[str(b) for b in buses],textposition='top center',textfont={'size':8},customdata=data,
+        hovertemplate='Bus %{customdata[0]} · %{customdata[7]}<br>V %{customdata[1]:.5f} pu<br>PV P %{customdata[4]:.2f} kW<br>Base net P %{customdata[2]:.2f} kW<br>Base Q %{customdata[3]:.2f} kVar<br>ΔP %{customdata[5]:.2f} kW · ΔQ %{customdata[6]:.2f} kVar<br>%{customdata[8]}<extra></extra>',
+        marker={'symbol':['diamond' if b in der_buses else ('triangle-up' if b in pv_buses else 'circle') for b in buses],
+            'size':[11 if b in der_buses else 9 for b in buses],
             'color':[d[1] for d in data],'coloraxis':'coloraxis',
-            'line':{'color':'#41505a','width':.7}},showlegend=False),row=2,col=column)
+            'line':{'color':['#a45100' if b in limited else '#41505a' for b in buses],
+                    'width':[3 if b in limited else .7 for b in buses]}},showlegend=False),row=2,col=column)
     fig.update_xaxes(visible=False,row=2,col=column)
     levels=[p[1] for p in positions.values()]
-    fig.update_yaxes(visible=False,range=[min(levels)-1.5,max(levels)+.6],row=2,col=column)
+    fig.update_yaxes(visible=False,range=[min(levels)-3,max(levels)+.8],row=2,col=column)
 
 
 def comparison_plot(frame,lab):
     """Three voltage traces overlaid, then three maps on a shared color scale."""
-    fig=make_subplots(rows=2,cols=3,specs=[[{'colspan':2},None,{'type':'table'}],[{},{},{}]],
-        column_widths=[.34,.34,.32],row_heights=[.52,.48],vertical_spacing=.17,horizontal_spacing=.05,
-        subplot_titles=['Voltage Profiles · Feeder Order','MLP + MPC Actions','Uncontrolled',
+    fig=make_subplots(rows=2,cols=3,specs=[[{'colspan':3},None,None],[{},{},{}]],
+        column_widths=[1/3]*3,row_heights=[.52,.48],vertical_spacing=.17,horizontal_spacing=.05,
+        subplot_titles=['Voltage Profiles · Feeder Order','Uncontrolled',
                         f'Best OLTC · Tap {frame["tap_pos"]:+d}','MLP + MPC'])
     paths=[[0,1,*range(2,9)],[1,*range(9,15)]]
     bus=[]
@@ -118,19 +127,20 @@ def comparison_plot(frame,lab):
     fig.update_xaxes(title_text='Bus along each feeder (gaps separate branches)',tickmode='array',
         tickvals=x,ticktext=labels,tickfont={'size':9},row=1,col=1)
     fig.update_yaxes(title_text='Voltage (p.u.)',range=[min(.88,min(values)-.01),max(1.12,max(values)+.01)],row=1,col=1)
-    actions=frame['actions']
-    fig.add_trace(go.Table(header={'values':list(actions.columns),'fill_color':'#eaf3ef','align':'center','height':23},
-        cells={'values':[actions[c].tolist() for c in actions.columns],'format':['d','.2f','.2f'],
-               'fill_color':'#fafcfc','align':'center','height':21,'font':{'size':11}}),row=1,col=3)
     positions=grid_positions(frame['baseline'])
-    for col,key in enumerate(['baseline','oltc','mpc'],1):add_heatmap(fig,frame[key],positions,col)
+    for col,key in enumerate(['baseline','oltc','mpc'],1):
+        add_heatmap(fig,frame[key],positions,col,frame,is_mpc=key=='mpc')
+    for name,symbol in [('PV site','triangle-up'),('PV + DER','diamond'),('At limit','diamond')]:
+        fig.add_trace(go.Scatter(x=[None],y=[None],mode='markers',name=name,
+            marker={'symbol':symbol,'size':9,'color':'#e8f1f6','line':{'color':'#a45100' if name=='At limit' else '#41505a',
+            'width':3 if name=='At limit' else 1}},legendgroup='sites',showlegend=True),row=1,col=1)
     fig.update_layout(template='plotly_white',height=600,autosize=True,
-        margin={'l':55,'r':30,'t':70,'b':55},
-        legend={'orientation':'h','x':0,'y':1.10,'font':{'size':12}},
+        margin={'l':48,'r':16,'t':82,'b':55},
+        legend={'orientation':'h','x':0,'y':1,'yref':'container','yanchor':'top','itemclick':False,'itemdoubleclick':False,'font':{'size':10}},
         coloraxis={'colorscale':'RdBu','cmin':.90,'cmax':1.10,
             'colorbar':{'title':'V (pu)','orientation':'h','x':.5,'y':-.04,'len':.5,'thickness':10}},
-        uirevision='grid-comparison')
-    fig.update_annotations(font_size=13)
+        uirevision='grid-comparison',meta={'scenario_id':frame['scenario_id']})
+    fig.update_annotations(font_size=11)
     return fig
 
 
@@ -141,66 +151,16 @@ def update_configuration(lf,pf,wp,wq,wv,session):
         caption=f"**Scenario {frame['scenario_id']} · {minutes//60:02d}:{minutes%60:02d}**  \nSynthetic daily profile"
         safe='within limits' if voltage_violation(session.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
         status=f'**OLTC tap position: {frame["tap_pos"]:+d}**  \nMLP + MPC voltage: {safe}'
-        return session,comparison_plot(frame,session.lab),caption,status
+        return session,comparison_plot(frame,session.lab),diagnostics_html(frame,session.lab),caption,status
     except Exception as exc:raise gr.Error(str(exc)) from exc
 
 
 def new_scenario(lf,pf,wp,wq,wv,session):
-    session.new_scenario()
-    return update_configuration(lf,pf,wp,wq,wv,session)
+    # Keep the displayed snapshot atomic, while a failed attempt still advances the RNG.
+    candidate=copy(session)
+    candidate.new_scenario()
+    return update_configuration(lf,pf,wp,wq,wv,candidate)
 
-
-CSS='''
-html,body {margin:0;height:100%;overflow:hidden}
-.gradio-container {height:100dvh!important;max-width:none!important;padding:12px 18px!important;box-sizing:border-box}
-.gradio-container > .main {height:100%;min-height:0;max-width:none!important}
-.gradio-container .app {display:flex;flex-direction:column;flex:1;min-height:0;height:100%;padding:0!important}
-.gradio-container .app > .column {flex:1;min-height:0;height:100%}
-.gradio-container .fill-height {min-height:0}
-#title {flex:0 0 auto!important;margin:0!important;padding-bottom:8px;border-bottom:2px solid #16876b}
-#title h1 {font-size:22px;margin:0;line-height:1.3}
-#workspace {flex:1!important;min-height:0!important;flex-wrap:nowrap!important;gap:16px}
-#controls {flex:0 0 290px!important;min-width:290px!important;max-width:290px!important;min-height:0;gap:4px;
- background:#f6f8fa;border:1px solid #e4e9ed;border-radius:10px;padding:8px;box-sizing:border-box}
-#controls h3 {font-size:15px;margin:0}
-#controls .prose p {margin:0;font-size:13px}
-#comparison {flex:1!important;min-width:0!important;min-height:0!important;height:100%;padding:0!important;border:0!important}
-#comparison > div {min-height:0}
-#comparison [data-testid="plotly"] {height:100%!important;width:100%!important}
-#controls > * {flex-grow:0!important}
-#controls .block {padding:4px 8px!important}
-#controls .block:has(.prose) {padding:0!important}
-#gain-row {gap:6px;flex-wrap:nowrap!important}
-#gain-row > div {min-width:0!important}
-footer {display:none!important}
-'''
-
-LAYOUT_JS='''() => {
-  const host=document.getElementById('comparison');
-  if (!host || host.dataset.fitted) return;
-  host.dataset.fitted='true';
-  let pending=false;
-  const fit=()=>{
-    pending=false;
-    const gd=host.querySelector('.js-plotly-plot');
-    if (!gd || !window.Plotly || !gd.layout) return;
-    if (!gd._gridSizingHook) {
-      gd._gridSizingHook=true;
-      gd.on('plotly_afterplot',schedule);
-    }
-    const box=host.getBoundingClientRect();
-    const height=Math.max(300,Math.floor(window.innerHeight-box.top-12));
-    const width=Math.floor(box.width);
-    if (Math.abs(box.height-height)>1) host.style.height=height+'px';
-    if (Math.abs((gd.layout.height||0)-height)>1 || Math.abs((gd.layout.width||0)-width)>1)
-      window.Plotly.relayout(gd,{height,width});
-  };
-  const schedule=()=>{if (!pending) {pending=true;requestAnimationFrame(fit);}};
-  new ResizeObserver(schedule).observe(host);
-  new MutationObserver(schedule).observe(host,{childList:true,subtree:true});
-  window.addEventListener('resize',schedule);
-  schedule();
-}'''
 
 
 def build_dashboard(lab=None):
@@ -213,23 +173,28 @@ def build_dashboard(lab=None):
         with gr.Row(elem_id='workspace'):
             with gr.Column(elem_id='controls'):
                 gr.Markdown('### 1. Scenario Initialization')
-                load=gr.Button('Load new scenario',variant='primary')
+                load=gr.Button('Load new scenario',variant='primary',elem_id='new-scenario')
                 timestamp=gr.Markdown('')
                 gr.Markdown('### 2. Operational Adjustments')
                 lf=gr.Slider(.5,2.,value=1.,step=.05,label='Load Scaling Factor')
                 pf=gr.Slider(0.,2.,value=1.,step=.05,label='PV Generation Factor')
                 gr.Markdown('### MPC Gains')
                 with gr.Row(elem_id='gain-row'):
-                    wp=gr.Number(1.,minimum=0,label='Cost P',step=.1,min_width=65)
-                    wq=gr.Number(.1,minimum=0,label='Cost Q',step=.1,min_width=65)
-                    wv=gr.Number(1000.,minimum=0,label='Cost V',step=100.,min_width=65)
+                    wp=gr.Number(1.,minimum=0,label='kP · ΔP cost',info='Higher: use less ΔP',step=.1,min_width=65,elem_id='gain-p')
+                    wq=gr.Number(.1,minimum=0,label='kQ · ΔQ cost',info='Higher: use less ΔQ',step=.1,min_width=65,elem_id='gain-q')
+                    wv=gr.Number(1000.,minimum=0,label='kV · voltage',info='Higher: stronger voltage correction',step=100.,min_width=65,elem_id='gain-v')
                 status=gr.Markdown('')
+                gr.HTML('<div id="scenario-feedback" role="status" aria-live="polite">Ready</div>')
             graph=gr.Plot(show_label=False,elem_id='comparison')
-        inputs=[lf,pf,wp,wq,wv,state];outputs=[state,graph,timestamp,status]
+            with gr.Column(elem_id='diagnostics-panel'):
+                diagnostics=gr.HTML('',elem_id='diagnostics')
+        inputs=[lf,pf,wp,wq,wv,state];outputs=[state,graph,diagnostics,timestamp,status]
         common={'concurrency_limit':1,'concurrency_id':'scenario_grid','show_progress':'hidden'}
         gr.on([lf.input,pf.input,wp.change,wq.change,wv.change],update_configuration,inputs,outputs,
             api_name='react',trigger_mode='always_last',**common)
-        load.click(new_scenario,inputs,outputs,api_name='new_scenario',**common)
+        load.click(None,[],[],js=BEGIN_SCENARIO_JS,queue=False,api_name=False).then(
+            new_scenario,inputs,outputs,api_name='new_scenario',**common).then(
+            None,[],[],js=END_SCENARIO_JS,queue=False,api_name=False)
         app.load(update_configuration,inputs,outputs,api_name='initial_snapshot',**common)
         app.load(None,js=LAYOUT_JS)
     return app.queue(default_concurrency_limit=1,max_size=8)
