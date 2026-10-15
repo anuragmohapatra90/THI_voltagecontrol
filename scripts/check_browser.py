@@ -45,12 +45,20 @@ def check_browser(url):
                     viewport:innerHeight,right:graph.x>=controls.right,
                     controlsBottom:controls.bottom,graphBottom:graph.bottom,
                     inputsFit:items.every(el=>el.getBoundingClientRect().bottom<=innerHeight),
-                    svgHeight:gd._fullLayout.height,hostHeight:graph.height};
+                    svgHeight:gd._fullLayout.height,hostHeight:graph.height,
+                    markersClear:[...gd.querySelectorAll('.scatterlayer .points path.point')].every(point=>{
+                        const marker=point.getBoundingClientRect();
+                        return [...gd.querySelectorAll('.colorbar .cbfill')].every(fill=>{
+                            const bar=fill.getBoundingClientRect();
+                            return marker.right<=bar.left || marker.left>=bar.right || marker.bottom<=bar.top || marker.top>=bar.bottom;
+                        });
+                    })};
             }""")
             assert result['scroll']<=height+1 and result['body']<=height+1,result
             assert result['right'] and result['inputsFit'],result
             assert result['controlsBottom']<=height+1 and result['graphBottom']<=height+1,result
             assert abs(result['svgHeight']-result['hostHeight'])<2,result
+            assert result['markersClear'],result
             print(f'Chromium {width}x{height}: setup left, complete comparison right, no page scroll: PASS')
         screenshot_log(page)
         previous=page.locator('#controls').inner_text()
@@ -63,5 +71,6 @@ def check_browser(url):
             const box=host.getBoundingClientRect();
             return Math.abs(gd.layout.height-(innerHeight-box.top-12))<2 && box.bottom<=innerHeight;
         }""")
-        print('Chromium scenario button updates displayed calendar timestamp: PASS')
+        print('Chromium scenario button updates displayed synthetic scenario: PASS')
         browser.close()
+

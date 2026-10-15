@@ -1,5 +1,4 @@
 pandapower==3.2.1
-simbench==1.6.1
 numpy==2.2.6
 pandas==2.2.3
 scipy==1.16.3
@@ -10,3 +9,4 @@ threadpoolctl==3.6.0
 plotly==6.3.1
 --extra-index-url https://download.pytorch.org/whl/cpu
 torch==2.8.0+cpu
+
