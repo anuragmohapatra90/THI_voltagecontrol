@@ -127,11 +127,11 @@ def add_heatmap(fig,net,positions,column,frame,is_mpc=False,informed=False):
 
 
 def comparison_plot(frame,lab,mode='local'):
+    """Three voltage traces overlaid, then three maps on a shared color scale."""
     informed=mode=='mlp'
     if informed:
         frame={**frame,'oltc':frame['informed_oltc'],'tap_pos':frame['informed_tap_pos']}
     oltc_name='MLP-informed OLTC' if informed else 'Local OLTC'
-    """Three voltage traces overlaid, then three maps on a shared color scale."""
     fig=make_subplots(rows=2,cols=3,specs=[[{'colspan':3},None,None],[{},{},{}]],
         column_widths=[1/3]*3,row_heights=[.52,.48],vertical_spacing=.17,horizontal_spacing=.05,
         subplot_titles=['Voltage Profiles · Feeder Order','Uncontrolled',
