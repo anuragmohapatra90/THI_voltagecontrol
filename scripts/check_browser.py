@@ -14,7 +14,7 @@ def check_contrast(page, mode):
         const rgb=s=>(s.match(/[\\d.]+/g)||[]).map(Number);
         const lum=c=>c.slice(0,3).map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4)
             .reduce((s,v,i)=>s+v*[.2126,.7152,.0722][i],0);
-        const selected=document.querySelectorAll('#controls input:not([type="range"]),#controls label,#controls .info,#controls .info-text,#new-scenario');
+        const selected=document.querySelectorAll('#controls input:not([type="range"]),#controls label,#controls .info,#controls .info-text,#controls strong,#controls b,.cost-function div,.cost-function sub,#new-scenario');
         return [...selected].filter(e=>e.getBoundingClientRect().height>0).map(e=>{
             const style=getComputedStyle(e);const fg=rgb(style.color);
             let p=e,bg=[255,255,255,1];
@@ -24,7 +24,7 @@ def check_contrast(page, mode):
         }).filter(x=>x.ratio<4.5);
     }''')
     assert not failures, (mode, failures)
-    print(f'Chromium {mode}: sidebar labels, gains, values and button contrast >=4.5:1: PASS')
+    print(f'Chromium {mode}: sidebar labels, hints, values, scenario/tap text and cost contrast >=4.5:1: PASS')
 
 
 def check_browser(url):
@@ -108,6 +108,13 @@ def check_browser(url):
             && document.getElementById('comparison').getAttribute('aria-busy')==='true'
             && document.getElementById('scenario-feedback').innerText.includes('Solving')''', timeout=1000)
         assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id') == previous
+        assert page.locator('#new-scenario').evaluate('''button => {
+            const rgb = s => (s.match(/[\\d.]+/g)||[]).map(Number);
+            const hidden = e => {const c=rgb(getComputedStyle(e).webkitTextFillColor);return c[3]===0;};
+            const after=getComputedStyle(button,'::after');
+            return hidden(button) && [...button.querySelectorAll('*')].every(hidden)
+                && after.content.includes('Loading scenario') && rgb(after.webkitTextFillColor)[0]===255;
+        }'''), 'Loading label must replace the original text without overlap.'
         assert held, 'The backend request should still be held while loading feedback is visible.'
         screenshot_log(page)
         for route in held:

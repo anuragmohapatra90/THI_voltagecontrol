@@ -15,7 +15,7 @@ html,body {margin:0;height:100%;overflow:hidden}
  background:#f6f8fa!important;border:1px solid #d8e1e8;border-radius:10px;padding:8px;box-sizing:border-box}
 #controls h3 {font-size:14px;margin:0;color:#172b3a!important}
 #controls,#controls label,#controls label span,#controls .prose,#controls .prose p,#controls .info,
-#controls .block,#controls input,#controls span,#controls p,#controls .info-text,#controls [data-testid="block-info"] {color:#172b3a!important}
+#controls .block,#controls input,#controls span,#controls p,#controls strong,#controls b,#controls .info-text,#controls [data-testid="block-info"] {color:#172b3a!important}
 #controls .prose p {margin:0;font-size:12px}
 #controls label,#controls label span {background:transparent!important}
 #controls .form {background:transparent!important}
@@ -27,8 +27,8 @@ html,body {margin:0;height:100%;overflow:hidden}
 #controls #new-scenario span {color:#fff!important}
 #controls #new-scenario[data-busy="true"] span {visibility:hidden}
 #controls #new-scenario:disabled {opacity:1!important;background:#4b6570!important;border-color:#4b6570!important}
-#controls #new-scenario[data-busy="true"] {color:transparent!important;pointer-events:none}
-#controls #new-scenario[data-busy="true"]::after {content:'Loading scenario…';position:absolute;inset:0;display:grid;place-items:center;color:#fff}
+#controls #new-scenario[data-busy="true"],#controls #new-scenario[data-busy="true"] * {color:transparent!important;-webkit-text-fill-color:transparent!important;pointer-events:none}
+#controls #new-scenario[data-busy="true"]::after {content:'Loading scenario…';position:absolute;inset:0;display:grid;place-items:center;color:#fff!important;-webkit-text-fill-color:#fff!important}
 #scenario-feedback {color:#405a6b;font-size:11px;line-height:16px;min-height:16px}
 #scenario-feedback[data-busy="true"]::before {content:'';display:inline-block;width:9px;height:9px;margin-right:6px;
  border:2px solid #b7c8d2;border-top-color:#087b64;border-radius:50%;animation:scenario-spin .7s linear infinite}
@@ -64,6 +64,7 @@ html,body {margin:0;height:100%;overflow:hidden}
 .voltage-scroll {min-height:0;overflow:auto;flex:1}
 .voltage-table td,.voltage-table tbody th {height:16px;line-height:14px;font-size:10.5px}
 .cost-function {flex:0 0 auto;border-top:1px solid #d8e1e8;padding-top:4px;font-size:10.5px;line-height:15px;color:#172b3a!important}
+#diagnostics .cost-function,#diagnostics .cost-function div,#diagnostics .cost-function sub {color:#172b3a!important}
 .cost-function sub {font-size:8px;line-height:0}
 .equation-indent {padding-left:13px}
 @media(min-height:760px) {.voltage-table td,.voltage-table tbody th {height:19px;line-height:17px;font-size:11.5px}}
