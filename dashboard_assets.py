@@ -93,11 +93,17 @@ footer {display:none!important}
 LAYOUT_JS = '''() => {
   const column=document.getElementById('comparison-column');
   const panel=document.getElementById('diagnostics-panel');
+  const controls=document.getElementById('controls');
   if (!column || column.dataset.fitted) return;
   column.dataset.fitted='true';
   let pending=false;
   const fit=()=>{
     pending=false;
+    if (controls) {
+      const h=Math.floor(innerHeight-controls.getBoundingClientRect().top-12);
+      controls.style.height=h+'px';
+      controls.style.maxHeight=h+'px';
+    }
     if (panel) {
       const h=Math.floor(innerHeight-panel.getBoundingClientRect().top-12);
       panel.style.height=h+'px';

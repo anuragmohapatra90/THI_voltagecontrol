@@ -124,6 +124,7 @@ def check_browser(url):
                         controlsBottom:controls.bottom,graphBottom:graph.bottom,diagnosticsBottom:diagnostics.bottom,
                         right:graph.x>=controls.right && diagnostics.x>=graph.right,
                         inputsFit:inputs.every(e=>e.getBoundingClientRect().bottom<=innerHeight),
+                    feedbackFit:document.getElementById('scenario-feedback').getBoundingClientRect().bottom<=innerHeight,
                         svgHeight:gd._fullLayout.height,hostHeight:graph.height,
                         lastBusVisible:last.bottom<=viewport.bottom+1,
                         costVisible:document.querySelector('.cost-function').getBoundingClientRect().bottom<=innerHeight,
@@ -138,7 +139,7 @@ def check_browser(url):
                 }''')
                 screenshot_log(page) if height == 650 else None
                 assert result['scroll'] <= height+1 and result['body'] <= height+1, result
-                assert result['right'] and result['inputsFit'], result
+                assert result['right'] and result['inputsFit'] and result['feedbackFit'], result
                 assert max(result['controlsBottom'],result['graphBottom'],result['diagnosticsBottom']) <= height+1, result
                 assert abs(result['svgHeight']-result['hostHeight']) < 2, result
                 assert result['lastBusVisible'] and result['costVisible'] and result['horizontalFit'], result

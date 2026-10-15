@@ -209,8 +209,13 @@ def status_markdown(frame,lab,mode='local'):
     safe='within limits' if voltage_violation(lab,frame['y_mpc'])<=1e-7 else 'outside limits'
     if mode=='mlp':
         flags=frame['informed_flags']
-        limit=' · tap limit' if flags['at_limit'] else ''
-        return (f'**OLTC tap position: {frame["informed_tap_pos"]:+d}** · ±5%  \n'
+        rating='LIMIT · ±5%' if flags['at_limit'] else '±5%'
+        reason={'estimated voltages in band':'Estimates in band',
+            'estimated feeder violation':'Estimated violation',
+            'no predicted improvement':'Holding · no estimated gain'}.get(flags['reason'],'Tap failed · rolled back')
+        return (f'**OLTC tap position: {frame["informed_tap_pos"]:+d}** · {rating}  \n'
+            f'{reason} · MPC {safe}')
+    return (f'**OLTC tap position: {frame["informed_tap_pos"]:+d}** · ±5%  \n'
             f'MLP: {flags["reason"]}{limit} · MPC {safe}')
     return (f'**OLTC tap position: {frame["tap_pos"]:+d}** · ±5%  \n'
         f'V₁ {frame["oltc_flags"]["secondary_voltage_pu"]:.4f} pu · MPC {safe}')
