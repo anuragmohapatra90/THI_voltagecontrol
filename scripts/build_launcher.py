@@ -91,15 +91,17 @@ from grid_lab import GridLab,Config
 from checks import run_checks
 from dashboard import build_dashboard,launch_dashboard
 from live_control import prepare_controller
+from active_grid.informed_oltc import prepare_tap_estimator
 import pandas as pd
 from IPython.display import display
 lab=GridLab(Config())
-print('Preparing grid and MLP controller…',flush=True)
+print('Preparing grid and voltage estimators…',flush=True)
 prepare_controller(lab)
+prepare_tap_estimator(lab)
 run_checks(lab)
-print('Grid and MLP ready. Source commit:',SOURCE_COMMIT)''')
+print('Grid and both MLPs ready. Source commit:',SOURCE_COMMIT)''')
 md('''## 4. Open the dashboard in another tab
-The server continues in background threads after this cell finishes. Open the printed link directly; there is no dashboard login. Change the load/PV sliders for immediate reaction, or use Load new scenario to generate another synthetic daily load/PV snapshot from the original ADG setup. All three control results appear together.
+The server continues in background threads after this cell finishes. Open the printed link directly; there is no dashboard login. Change the load/PV sliders for immediate reaction, or use Load new scenario to generate another synthetic daily load/PV snapshot from the original ADG setup. All three control results appear together. Switch between Local OLTC and MLP-informed OLTC to compare their response to the same scenario.
 
 If a new commit has been merged, restart the session and run all before launching a new comparison. Reopening the same GitHub-Colab link also loads the latest notebook content.''')
 code('''from IPython.display import HTML,display

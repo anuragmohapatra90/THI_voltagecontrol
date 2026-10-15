@@ -85,7 +85,7 @@ def grid_positions(net):
     return positions
 
 
-def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
+def add_heatmap(fig,net,positions,column,frame,is_mpc=False,informed=False):
     xx=[];yy=[]
     for table,a_name,b_name in [(net.line,'from_bus','to_bus'),(net.trafo,'hv_bus','lv_bus')]:
         for _,r in table[table.in_service].iterrows():
@@ -101,7 +101,7 @@ def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
     data=[]
     for b in buses:
         if b==lab_bus:
-            site='LV busbar · OLTC sensor'
+            site='LV busbar' if informed else 'LV busbar · OLTC sensor'
         else:
             installed=[]
             if b in load_buses:installed.append('Load')
@@ -112,7 +112,7 @@ def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
             float(load.q_mvar.get(b,0)*1000),frame['pv_bus_kw'].get(int(b),0.),
             float(generation.p_mw.get(b,0)*1000),float(generation.q_mvar.get(b,0)*1000),
             site,
-            'LIMIT REACHED' if b in limited else ('OLTC band: 0.99–1.01 pu' if b==lab_bus else ''),frame['load_bus_kw'].get(int(b),0.)])
+            'LIMIT REACHED' if b in limited else (('MLP band: 0.95–1.05 pu (LV buses)' if informed else 'OLTC band: 0.99–1.01 pu') if b==lab_bus else ''),frame['load_bus_kw'].get(int(b),0.)])
     fig.add_trace(go.Scatter(x=[positions[int(b)][0] for b in buses],y=[positions[int(b)][1] for b in buses],
         mode='markers+text',text=[str(b) for b in buses],textposition='top center',textfont={'size':8},customdata=data,
         hovertemplate='Bus %{customdata[0]} · %{customdata[7]}<br>V %{customdata[1]:.5f} pu<br>Gross load P %{customdata[9]:.2f} kW<br>Load Q %{customdata[3]:.2f} kVar<br>PV P %{customdata[4]:.2f} kW<br>Base net P %{customdata[2]:.2f} kW<br>ΔP %{customdata[5]:.2f} kW · ΔQ %{customdata[6]:.2f} kVar<br>%{customdata[8]}<extra></extra>',
@@ -178,7 +178,7 @@ def comparison_plot(frame,lab,mode='local'):
     fig.update_yaxes(title_text='Voltage (p.u.)',range=[min(.88,min(values)-.01),max(1.12,max(values)+.01)],row=1,col=1)
     positions=grid_positions(frame['baseline'])
     for col,key in enumerate(['baseline','oltc','mpc'],1):
-        add_heatmap(fig,frame[key],positions,col,frame,is_mpc=key=='mpc')
+        add_heatmap(fig,frame[key],positions,col,frame,is_mpc=key=='mpc',informed=informed)
     for name,symbol in [('Load + PV','triangle-up'),('Load + PV + DER','diamond'),('At limit','diamond')]:
         fig.add_trace(go.Scatter(x=[None],y=[None],mode='markers',name=name,
             marker={'symbol':symbol,'size':9,'color':'#e8f1f6','line':{'color':'#a45100' if name=='At limit' else '#41505a',

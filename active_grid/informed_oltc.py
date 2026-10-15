@@ -26,7 +26,7 @@ class TapVoltageEstimator:
         return self.sy.inverse_transform(y)
 
 
-def _campaign(lab, count, seed):
+def _campaign(lab, count, seed, name):
     net = lab.new_net()
     xs, ys = [], []
     with reference_random(seed):
@@ -42,9 +42,12 @@ def _campaign(lab, count, seed):
             try:
                 lab.solve(net)
             except (pp.LoadflowNotConverged, ValueError):
-                continue
-            xs.append(np.r_[bp, bq, taps[i]])
-            ys.append(net.res_bus.loc[range(config.BUS_COUNT), 'vm_pu'].to_numpy().copy())
+                pass
+            else:
+                xs.append(np.r_[bp, bq, taps[i]])
+                ys.append(net.res_bus.loc[range(config.BUS_COUNT), 'vm_pu'].to_numpy().copy())
+            if (i+1)%500==0:
+                print(f'Tap MLP {name}: {i+1}/{count}, {len(xs)} converged', flush=True)
     if len(xs)<50:
         raise ValueError('Too few converged tap-estimator training samples.')
     return np.asarray(xs), np.asarray(ys)
@@ -58,8 +61,8 @@ def prepare_tap_estimator(lab, samples=3000, test_samples=500):
     # fork_rng also preserves the original MPC model/training RNG stream.
     with torch.random.fork_rng():
         torch.manual_seed(lab.cfg.seed+100)
-        x, y = _campaign(lab, samples, lab.cfg.seed+101)
-        xt, yt = _campaign(lab, test_samples, lab.cfg.seed+102)
+        x, y = _campaign(lab, samples, lab.cfg.seed+101, 'training')
+        xt, yt = _campaign(lab, test_samples, lab.cfg.seed+102, 'test')
         xa, xv, ya, yv = train_test_split(x, y, test_size=.2, random_state=42)
         sx, sy = StandardScaler().fit(xa), StandardScaler().fit(ya)
         data = TensorDataset(torch.tensor(sx.transform(xa), dtype=torch.float32),

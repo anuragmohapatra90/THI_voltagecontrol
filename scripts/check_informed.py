@@ -17,6 +17,8 @@ def check_informed(lab):
     # Pure policy: a safe held tap stays put; low/high feeders call for opposite taps.
     profiles=np.ones((9,15))
     assert choose_tap(lab,profiles,taps,2)==(2,'estimated voltages in band')
+    profiles[:,0]=1.2
+    assert choose_tap(lab,profiles,taps,2)==(2,'estimated voltages in band')
     for sign in [1,-1]:
         profiles=np.ones((9,15))
         profiles[:,1:]=1-sign*.08+np.asarray(taps)[:,None]*.0125
@@ -92,5 +94,14 @@ def check_informed(lab):
     failed=update_configuration(5,0,1,.1,1000,session,'mlp')
     assert failed[0] is session and session.last is previous
     assert len(failed)==7 and all(v=={'__type__':'update'} for v in failed[1:6])
+    from active_grid.local_oltc import settle_oltc
+    comparisons=[]
+    for seed,lf,pf in [(6,1,1),(0,.5,5),(6,3,0)]:
+        b=lab.new_net();lab.set_snapshot(b,lab.generate_scenario(seed),lf,pf);yb=lab.solve(b)
+        _,yl,tl,_=settle_oltc(lab,b)
+        _,yi,ti,_=informed_oltc(lab,b)
+        comparisons.append({'seed':seed,'load':lf,'pv':pf,'local_tap':tl,'informed_tap':ti,
+            'actual_violations':[lab.violation(yb),lab.violation(yl),lab.violation(yi)]})
+    print('Actual AC comparison (uncontrolled/local/informed OLTC):',comparisons)
     print('Tap-aware clean held-out AC MAE:',report['voltage_test_clean_mae_pu'])
     print('Prediction-only tap selection, no AC search, rollback, matched per-bus diagnostics and cached synchronized tabs: PASS')
