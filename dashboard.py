@@ -282,9 +282,9 @@ def build_dashboard(lab=None, *, scenario_seed=None):
                 feedback=gr.HTML(feedback_html(),elem_id='feedback-host')
             with gr.Column(elem_id='comparison-column'):
                 with gr.Tabs(elem_id='controller-tabs'):
-                    with gr.Tab('Local OLTC',id='local') as local_tab:
+                    with gr.Tab('Local OLTC',id='local',render_children=True) as local_tab:
                         graph=gr.Plot(show_label=False,elem_id='comparison',elem_classes='comparison-plot')
-                    with gr.Tab('MLP-informed OLTC',id='mlp') as informed_tab:
+                    with gr.Tab('MLP-informed OLTC',id='mlp',render_children=True) as informed_tab:
                         informed_graph=gr.Plot(show_label=False,elem_id='comparison-mlp',elem_classes='comparison-plot')
             with gr.Column(elem_id='diagnostics-panel'):
                 diagnostics=gr.HTML('',elem_id='diagnostics')
