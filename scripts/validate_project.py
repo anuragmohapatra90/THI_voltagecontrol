@@ -1,4 +1,4 @@
-"""Validate a thin launcher, safe real Git refresh, and the actual SimBench model."""
+"""Validate a thin launcher, safe real Git refresh, and the original ADG model."""
 from pathlib import Path
 import os, sys, subprocess, tempfile, py_compile
 ROOT=Path(__file__).resolve().parents[1]
@@ -54,3 +54,4 @@ def main():
     print('Thin notebook, source compilation, physical checks, live UI behavior, and commit metadata: PASS')
 
 if __name__=='__main__':main()
+

@@ -1,28 +1,23 @@
-"""ADG_datadriven's direct-PQ, voltage-penalty MPC on the actual SimBench buses."""
+"""ADG direct-PQ MLP/MPC, acting at the original three DER sites."""
 import numpy as np
 import torch
 import pandapower as pp
+from . import config
 from scipy.optimize import minimize
 
-MAX_P_MW=.05
-MAX_Q_MVAR=.05
-DER_RATING_MVA=.10
-
-
-def attach_der(net,der_buses):
-    existing=net.sgen[net.sgen.type.fillna('')=='adg_control_der']
-    ids={int(r.bus):i for i,r in existing.iterrows()}
-    for b in der_buses:
-        if b not in ids:
-            ids[b]=pp.create_sgen(net,bus=b,p_mw=0,q_mvar=0,sn_mva=DER_RATING_MVA,
-                name=f'Control DER {b}',type='adg_control_der')
-    return ids
+MAX_P_MW=config.MAX_P_MW
+MAX_Q_MVAR=config.MAX_Q_MVAR
 
 
 def apply_der_setpoints(net,der_buses,p_set,q_set):
-    ids=attach_der(net,der_buses)
-    for b,i in ids.items():net.sgen.loc[i,['p_mw','q_mvar']]=[p_set.get(b,0.),q_set.get(b,0.)]
-    return ids
+    """Use the original per-bus sgens; do not add extra control resources."""
+    allowed=set(map(int,der_buses))
+    net.sgen.loc[:,['p_mw','q_mvar']]=0.
+    for b in allowed:
+        ids=net.sgen.index[net.sgen.bus==b]
+        if len(ids)!=1:raise ValueError(f'Expected one original ADG sgen at bus {b}.')
+        net.sgen.loc[ids,['p_mw','q_mvar']]=[p_set.get(b,0.),q_set.get(b,0.)]
+    return {int(r.bus):int(i) for i,r in net.sgen.iterrows() if int(r.bus) in allowed}
 
 
 def net_bus_pq(net,bus_ids):
@@ -90,10 +85,6 @@ class MLP_MPC_Controller:
         return ({b:float(v) for b,v in zip(self.der_buses,action[:self.n_der])},
                 {b:float(v) for b,v in zip(self.der_buses,action[self.n_der:])})
 
-    def attach_der(self,net):
-        """Reference's ±50 kW/kVar flexible DERs, separately from profiled PV."""
-        return attach_der(net,self.der_buses)
-
     def apply_setpoints(self,net,p_set,q_set):
         return apply_der_setpoints(net,self.der_buses,p_set,q_set)
 
@@ -118,3 +109,4 @@ class MLP_MPC_Controller:
             'action_cost':float(weights[0]*np.sum(p_action**2)+weights[1]*np.sum(q_action**2)),
             'objective':objective,'predicted_voltages':predicted}
         return y,p_set,q_set,flags
+

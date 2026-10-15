@@ -13,9 +13,9 @@ md('''# Voltage control for ADG · GitHub-backed launcher
 
 This notebook loads the project directly from GitHub. Bookmark this GitHub-linked Colab page; future merged changes are fetched by running the checkout cell again. No source modules are embedded here.
 
-**Run all → Open dashboard → load a scenario or adjust PQ.** Use a CPU runtime. Keep Colab connected while using the separate dashboard tab.
+**Run all → Open dashboard → load a scenario or adjust PQ.** The original ADG two-feeder grid and synthetic profiles are used. Use a CPU runtime. Keep Colab connected while using the separate dashboard tab.
 
-After a PR is merged, restart the session and run all to load the latest code cleanly. An open dashboard does not update itself in the middle of an experiment. The exact fetched commit is printed and exported with experiment results.''')
+After a PR is merged, restart the session and run all to load the latest code cleanly. An open dashboard does not update itself in the middle of an experiment. The exact fetched commit is printed for reproducibility.''')
 md('''## 1. Fetch current project source
 `main` is the stable version. To test a PR before merging, use `refs/pull/123/head`; branches, tags, and commit SHAs are also supported.
 
@@ -82,8 +82,9 @@ md('''## 3. Load the fetched modules and verify the grid
 Modules are loaded from the refreshed checkout, including when you reuse an already-open notebook.''')
 code('''import importlib, os, sys
 os.chdir(PROJECT_DIR)
-for name in ['grid_lab','plots','active_grid.controller','active_grid.mlp_model','active_grid.training','active_grid','live_control','scenarios','dashboard','checks']:
-    sys.modules.pop(name,None)
+for name in list(sys.modules):
+    if name in ['grid_lab','plots','live_control','scenarios','dashboard','checks'] or name=='active_grid' or name.startswith('active_grid.'):
+        sys.modules.pop(name,None)
 sys.path.insert(0,str(PROJECT_DIR))
 importlib.invalidate_caches()
 from grid_lab import GridLab,Config
@@ -98,7 +99,7 @@ prepare_controller(lab)
 run_checks(lab)
 print('Grid and MLP ready. Source commit:',SOURCE_COMMIT)''')
 md('''## 4. Open the dashboard in another tab
-The server continues in background threads after this cell finishes. Open the printed link directly; there is no dashboard login. Change the load/PV sliders for immediate reaction, or use Load new scenario to select another date/time from the full SimBench year. All three control results appear together.
+The server continues in background threads after this cell finishes. Open the printed link directly; there is no dashboard login. Change the load/PV sliders for immediate reaction, or use Load new scenario to generate another synthetic daily load/PV snapshot from the original ADG setup. All three control results appear together.
 
 If a new commit has been merged, restart the session and run all before launching a new comparison. Reopening the same GitHub-Colab link also loads the latest notebook content.''')
 code('''from IPython.display import HTML,display
@@ -121,3 +122,4 @@ nb.cells=cells
 nbf.validate(nb)
 nbf.write(nb,ROOT/'Grid_Control_Lab.ipynb')
 print('Launcher generated:',len(nb.cells),'cells')
+

@@ -1,40 +1,50 @@
-"""Physics and control checks; no fabricated grids or forecasts."""
+"""Upstream identity and independent physical parity checks for the ADG plant."""
+from pathlib import Path
+import hashlib
 import numpy as np
-from grid_lab import GridLab, Config
+from pandas.testing import assert_frame_equal
+from active_grid import config, utils
+from active_grid.envs import DistributionGridEnv
+from active_grid.randomness import reference_random
+from grid_lab import GridLab
+
+REFERENCE_BLOBS = {
+    'active_grid/config.py': 'ec13bcc49282cc7cbbfd47a415b7228349a7002f',
+    'active_grid/envs.py': 'b1c07316030cb627df5925230ff9bbb0cfff3b02',
+    'active_grid/utils.py': 'aa131dfc3af920818f03f176b12fbaaa5a719feb',
+    'active_grid/mlp_model.py': '7c8fdc3d7c02da3ce1a77adfcf4468853df48b7c',
+}
+
 
 def run_checks(lab=None):
-    lab=lab or GridLab()
-    net=lab.new_net(); available=lab.set_profile(net,48,1,1)
-    lab.rating=lab.base_rating.copy()
-    lab.control(net,available,np.zeros(2*lab.ng)); y=lab.solve(net)
-    net.trafo.loc[lab.tid,'tap_pos']=lab.tap0+1
-    y1=lab.solve(net)
-    delta=float(np.max(np.abs(y1[:lab.nv]-y[:lab.nv])))
-    assert delta>1e-4, 'Tap positions must affect voltage.'
-    for a in [0,.5,1]:
-        for q in [-1,0,1]:
-            u=np.r_[np.full(lab.ng,a),np.full(lab.ng,q)]
-            info=lab.control(net,available,u)
-            p=net.sgen.loc[lab.pv_ids,'p_mw'].to_numpy()
-            reactive=net.sgen.loc[lab.pv_ids,'q_mvar'].to_numpy()
-            assert np.all(p*p+reactive*reactive<=lab.rating**2+1e-10)
-            assert np.all(p>=0)
-    for mode in ['Uncontrolled','Automatic OLTC']:
-        d,v,a=lab.run(mode,steps=4,start=48)
-        assert d.converged.all()
-        assert (d.tap_moves<=1).all()
-        assert d.tap_pos.between(lab.tap_min,lab.tap_max).all()
-        assert v.shape==(4,lab.nv)
-        expected=(d.v_min_pu>=lab.cfg.v_min)&(d.v_max_pu<=lab.cfg.v_max)&(d.max_loading_percent<=lab.cfg.thermal_limit)
-        assert (d.safe==expected).all()
-    if lab.model is not None:
-        d,_,a=lab.run('MLP + MPC',steps=2,start=48)
-        assert d.converged.all()
-        assert (d.tap_pos==lab.tap0).all()
-        assert (a.iloc[:,:lab.ng].to_numpy()>=-1e-8).all()
-        assert (a.iloc[:,:lab.ng].to_numpy()<=lab.cfg.max_curtailment+1e-8).all()
-        assert (np.abs(a.iloc[:,lab.ng:].to_numpy())<=1+1e-8).all()
-    return {'tap_voltage_change_pu':delta,'inverter_capability':'passed','OLTC_step_and_bounds':'passed','PQ_power_flow':'passed',
-            'MLP_MPC':'ADG controller prepared' if getattr(lab,'voltage_controller',None) is not None else ('legacy offline checks passed' if lab.model is not None else 'prepare controller first')}
-
-if __name__=='__main__': print(run_checks())
+    lab = lab or GridLab()
+    root = Path(__file__).resolve().parent
+    for path, expected in REFERENCE_BLOBS.items():
+        content = (root/path).read_bytes()
+        assert hashlib.sha1(b'blob '+str(len(content)).encode()+b'\0'+content).hexdigest() == expected, path
+    with reference_random(lab.cfg.seed):
+        original = DistributionGridEnv()
+    for name in ['bus', 'line', 'load', 'sgen', 'ext_grid']:
+        assert_frame_equal(original.net[name], lab.net[name])
+    assert len(lab.net.bus) == 15 and len(lab.net.line) == 13
+    assert config.DER_BUSES == [5, 8, 14]
+    assert np.all(lab.net.sgen.sn_mva == .10)
+    scenario = lab.generate_scenario(6)
+    with reference_random(6):
+        p, q, pv = utils.generate_scenarios(1, config.BUS_COUNT)
+        measured = original.step(p[0]-pv[0], q[0], {}, {})
+    assert measured is not None
+    assert np.array_equal(scenario['load_p'][2:], p[0, 2:])
+    assert np.array_equal(scenario['load_q'][2:], q[0, 2:])
+    assert np.array_equal(scenario['pv'][2:], pv[0, 2:])
+    trial = lab.new_net()
+    lab.set_snapshot(trial, scenario)
+    y = lab.solve(trial)
+    assert np.allclose(trial.res_bus.vm_pu, original.net.res_bus.vm_pu, atol=1e-10)
+    trial.trafo.loc[lab.tid, 'tap_pos'] = 1
+    moved = lab.solve(trial)
+    assert np.max(np.abs(moved-y)) > .005
+    assert GridLab(lab.cfg).grid_fingerprint() == lab.grid_fingerprint()
+    return {'upstream_files': 'byte-identical', 'grid_profiles': 'reference parity passed',
+            'neutral_AC': 'reference parity passed', 'OLTC_voltage_response': 'passed',
+            'control_sites': config.DER_BUSES}

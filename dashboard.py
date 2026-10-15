@@ -8,80 +8,48 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import gradio as gr
 import pandapower as pp
-from grid_lab import GridLab,PRESETS
+from grid_lab import GridLab
+from active_grid import config
+from active_grid.oltc import best_oltc,oltc_score
 from live_control import prepare_controller,voltage_violation
-from scenarios import prepare_buckets,random_layout,apply_layout,feeder_paths
 
-
-def oltc_score(lab,y,tap):
-    """Best achievable voltages; thermal compliance remains independently reported."""
-    v=y[:lab.nv]
-    voltage_violation=max(float(np.max(lab.cfg.v_min-v)),float(np.max(v-lab.cfg.v_max)),0.)
-    return (voltage_violation,float(np.mean((v-1.)**2)),lab.violation(y),abs(tap-lab.tap0))
-
-
-def best_oltc(lab,baseline):
-    """Exhaustive AC benchmark of every allowed tap at this fixed PQ snapshot."""
-    net=deepcopy(baseline);candidates=[]
-    for tap in range(lab.tap_min,lab.tap_max+1):
-        net.trafo.loc[lab.tid,'tap_pos']=tap
-        try:
-            y=lab.solve(net)
-            candidates.append((oltc_score(lab,y,tap),tap))
-        except (pp.LoadflowNotConverged,ValueError):pass
-    if not candidates:raise ValueError('No OLTC tap produced a converged AC solution.')
-    _,tap=min(candidates)
-    net.trafo.loc[lab.tid,'tap_pos']=tap
-    return net,lab.solve(net),tap
 
 
 @dataclass
 class ScenarioExperiment:
     lab: object
     rng: object = field(default_factory=np.random.default_rng)
-    t: int = 0
-    preset: str = 'Custom'
+    scenario_id: int = 0
+    base: dict = field(default_factory=dict)
     last: dict = field(default_factory=dict)
-    layout: dict = field(default_factory=dict)
 
     def __post_init__(self):
-        prepare_buckets(self.lab)
-        self.t=int(self.rng.integers(self.lab.steps))
-        self.layout=random_layout(self.lab,self.rng)
-        if self.preset!='Custom':self.new_scenario(self.preset)
+        self.new_scenario()
 
-    def new_scenario(self,preset=None):
-        self.preset=preset or self.preset
-        bucket=self.lab.scenario_buckets[self.preset]
-        choices=bucket[bucket!=self.t]
-        self.t=int(self.rng.choice(choices if len(choices) else bucket))
-        self.layout=(random_layout(self.lab,self.rng) if self.preset=='Custom'
-                     else deepcopy(self.lab.spatial_layouts[self.preset][self.t]))
+    def new_scenario(self):
+        self.base=self.lab.generate_scenario(int(self.rng.integers(0,2**32-1)))
+        self.scenario_id+=1
 
-    def sample(self,lf,pf,weights=(1.,.1,1000.),preset='Custom'):
+    def sample(self,lf=1.,pf=1.,weights=(1.,.1,1000.)):
+        if not .5<=float(lf)<=2 or not 0<=float(pf)<=2:
+            raise ValueError('Use the original ADG slider ranges: load 0.5–2 and PV 0–2.')
         lab=self.lab
-        if self.preset!=preset:self.new_scenario(preset)
-        if preset!='Custom':lf,pf=PRESETS[preset]
-        lab.rating=lab.base_rating*max(1.,float(pf))
-        baseline=lab.new_net()
-        available=lab.set_profile(baseline,self.t,float(lf),float(pf))
-        lab.control(baseline,available,np.zeros(2*lab.ng))
-        apply_layout(lab,baseline,self.layout)
         controller=prepare_controller(lab)
-        controller.attach_der(baseline)
+        baseline=lab.new_net()
+        lab.set_snapshot(baseline,self.base,lf,pf)
         y_base=lab.solve(baseline)
         oltc,y_oltc,tap=best_oltc(lab,baseline)
         mpc=deepcopy(baseline)
         y_mpc,p_set,q_set,flags=controller.run_snapshot(lab,mpc,weights)
         actions=pd.DataFrame({'Bus':list(p_set),'P (kW)':[1000*p_set[b] for b in p_set],
             'Q (kVar)':[1000*q_set[b] for b in p_set]}).round(2)
-        self.last={'profile_step':self.t,'timestamp':lab.profile_times[self.t],
-            'baseline':baseline,'oltc':oltc,'mpc':mpc,
+        self.last={'scenario_id':self.scenario_id,'scenario_seed':self.base['seed'],
+            'hour':self.base['hour'],'baseline':baseline,'oltc':oltc,'mpc':mpc,
             'y_base':y_base,'y_oltc':y_oltc,'y_mpc':y_mpc,'tap_pos':tap,
-            'actions':actions,'flags':flags,'preset':preset,'load_factor':lf,'pv_factor':pf,
-            'load_p_kw':float(baseline.load.p_mw.sum()*1000),
-            'load_q_kvar':float(baseline.load.q_mvar.sum()*1000),
-            'pv_kw':float(np.sum(available)*1000),'layout':deepcopy(self.layout)}
+            'actions':actions,'flags':flags,'load_factor':float(lf),'pv_factor':float(pf),
+            'gross_load_p_kw':float(self.base['load_p'].sum()*lf*1000),
+            'load_q_kvar':float(self.base['load_q'].sum()*lf*1000),
+            'pv_kw':float(self.base['pv'].sum()*pf*1000)}
         return self.last
 
 
@@ -108,14 +76,14 @@ def add_heatmap(fig,net,positions,column):
             xx.extend([a[0],b[0],None]);yy.extend([a[1],b[1],None])
     fig.add_trace(go.Scatter(x=xx,y=yy,mode='lines',line={'color':'#9aa4ae','width':1.5},
         hoverinfo='skip',showlegend=False),row=2,col=column)
-    buses=list(net.bus.index);pv_buses=set(net.sgen.loc[net.sgen.in_service,'bus'].astype(int))
+    buses=list(net.bus.index);pv_buses=set(config.DER_BUSES)
     load_p=net.load.groupby('bus').p_mw.sum();load_q=net.load.groupby('bus').q_mvar.sum()
     gen_p=net.sgen.groupby('bus').p_mw.sum()
     data=[[int(b),float(net.res_bus.loc[b,'vm_pu']),float(load_p.get(b,0)*1000),
            float(load_q.get(b,0)*1000),float(gen_p.get(b,0)*1000)] for b in buses]
     fig.add_trace(go.Scatter(x=[positions[int(b)][0] for b in buses],y=[positions[int(b)][1] for b in buses],
         mode='markers+text',text=[str(b) for b in buses],textposition='top center',textfont={'size':9},customdata=data,
-        hovertemplate='Bus %{customdata[0]}<br>V %{customdata[1]:.4f} pu<br>Load P %{customdata[2]:.1f} kW<br>Load Q %{customdata[3]:.1f} kVar<br>Generation P %{customdata[4]:.1f} kW<extra></extra>',
+        hovertemplate='Bus %{customdata[0]}<br>V %{customdata[1]:.4f} pu<br>Base net P %{customdata[2]:.1f} kW<br>Base Q %{customdata[3]:.1f} kVar<br>DER P %{customdata[4]:.1f} kW<extra></extra>',
         marker={'symbol':['square' if int(b) in pv_buses else 'circle' for b in buses],
             'size':[12 if int(b) in pv_buses else 9 for b in buses],
             'color':[d[1] for d in data],'coloraxis':'coloraxis',
@@ -130,7 +98,7 @@ def comparison_plot(frame,lab):
         column_widths=[.34,.34,.32],row_heights=[.52,.48],vertical_spacing=.17,horizontal_spacing=.05,
         subplot_titles=['Voltage Profiles · Feeder Order','MLP + MPC Actions','Uncontrolled',
                         f'Best OLTC · Tap {frame["tap_pos"]:+d}','MLP + MPC'])
-    paths=feeder_paths(lab)
+    paths=[[0,1,*range(2,9)],[1,*range(9,15)]]
     bus=[]
     for path in paths:bus.extend(path+[None])
     labels=['' if b is None else str(b) for b in bus];x=list(range(len(bus)));values=[]
@@ -165,25 +133,20 @@ def comparison_plot(frame,lab):
     return fig
 
 
-def update_configuration(preset,lf,pf,wp,wq,wv,session):
+def update_configuration(lf,pf,wp,wq,wv,session):
     try:
-        frame=session.sample(lf,pf,(wp,wq,wv),preset)
-        timestamp=frame['timestamp'].strftime('%d %b %Y · %H:%M')
-        caption=f'**{timestamp}**'
+        frame=session.sample(lf,pf,(wp,wq,wv))
+        minutes=int(frame['hour']*60)
+        caption=f"**Scenario {frame['scenario_id']} · {minutes//60:02d}:{minutes%60:02d}**  \nSynthetic daily profile"
         safe='within limits' if voltage_violation(session.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
         status=f'**OLTC tap position: {frame["tap_pos"]:+d}**  \nMLP + MPC voltage: {safe}'
         return session,comparison_plot(frame,session.lab),caption,status
     except Exception as exc:raise gr.Error(str(exc)) from exc
 
 
-def new_scenario(preset,lf,pf,wp,wq,wv,session):
-    session.new_scenario(preset)
-    return update_configuration(preset,lf,pf,wp,wq,wv,session)
-
-
-def preset_controls(preset):
-    lf,pf=PRESETS[preset];custom=preset=='Custom'
-    return gr.Slider(value=lf,interactive=custom),gr.Slider(value=pf,interactive=custom)
+def new_scenario(lf,pf,wp,wq,wv,session):
+    session.new_scenario()
+    return update_configuration(lf,pf,wp,wq,wv,session)
 
 
 CSS='''
@@ -243,8 +206,6 @@ def build_dashboard(lab=None):
     seed=lab or GridLab()
     if getattr(seed,'voltage_controller',None) is None:
         print('Preparing ADG MLP + MPC controller…',flush=True);prepare_controller(seed);print('MLP ready.',flush=True)
-    if not hasattr(seed,'scenario_buckets'):
-        print('Preparing voltage-stress scenario buckets…',flush=True);prepare_buckets(seed)
     with gr.Blocks(title='Voltage control for ADG',analytics_enabled=False,fill_height=True) as app:
         state=gr.State(value=lambda:ScenarioExperiment(deepcopy(seed)))
         gr.Markdown('# Voltage control for ADG',elem_id='title')
@@ -254,9 +215,8 @@ def build_dashboard(lab=None):
                 load=gr.Button('Load new scenario',variant='primary')
                 timestamp=gr.Markdown('')
                 gr.Markdown('### 2. Operational Adjustments')
-                preset=gr.Dropdown(list(PRESETS),value='High PV',label='Preset')
-                lf=gr.Slider(.3,seed.cfg.load_scale_max,value=PRESETS['High PV'][0],step=.05,label='Load Scaling Factor',interactive=False)
-                pf=gr.Slider(0,seed.cfg.pv_scale_max,value=PRESETS['High PV'][1],step=.05,label='PV Generation Factor',interactive=False)
+                lf=gr.Slider(.5,2.,value=1.,step=.05,label='Load Scaling Factor')
+                pf=gr.Slider(0.,2.,value=1.,step=.05,label='PV Generation Factor')
                 gr.Markdown('### MPC Gains')
                 with gr.Row(elem_id='gain-row'):
                     wp=gr.Number(1.,minimum=0,label='Cost P',step=.1,min_width=65)
@@ -264,12 +224,10 @@ def build_dashboard(lab=None):
                     wv=gr.Number(1000.,minimum=0,label='Cost V',step=100.,min_width=65)
                 status=gr.Markdown('')
             graph=gr.Plot(show_label=False,elem_id='comparison')
-        inputs=[preset,lf,pf,wp,wq,wv,state];outputs=[state,graph,timestamp,status]
+        inputs=[lf,pf,wp,wq,wv,state];outputs=[state,graph,timestamp,status]
         common={'concurrency_limit':1,'concurrency_id':'scenario_grid','show_progress':'hidden'}
         gr.on([lf.input,pf.input,wp.change,wq.change,wv.change],update_configuration,inputs,outputs,
             api_name='react',trigger_mode='always_last',**common)
-        preset.change(preset_controls,preset,[lf,pf],queue=False,api_name='preset').then(
-            update_configuration,inputs,outputs,trigger_mode='always_last',**common)
         load.click(new_scenario,inputs,outputs,api_name='new_scenario',**common)
         app.load(update_configuration,inputs,outputs,api_name='initial_snapshot',**common)
         app.load(None,js=LAYOUT_JS)
@@ -290,3 +248,4 @@ def launch_dashboard(app, *, share=True, auth=None):
         # Preserve the tuple API for old open notebooks, without authentication.
         return share_url if share else local_url,None
     except Exception:app.close();raise
+

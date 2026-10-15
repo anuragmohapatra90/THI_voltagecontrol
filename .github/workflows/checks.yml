@@ -28,3 +28,4 @@ jobs:
           GRID_LAB_BROWSER_CHECK: '1'
           GRID_LAB_SCREENSHOT_LOG: '1'
         run: python scripts/validate_project.py
+

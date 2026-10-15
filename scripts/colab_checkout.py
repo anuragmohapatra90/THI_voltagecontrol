@@ -31,3 +31,4 @@ def checkout_source(remote_url, ref, destination, *, git_env=None):
     commit=git('rev-parse','FETCH_HEAD')
     git('checkout','--quiet','--detach',commit)
     return destination,commit
+

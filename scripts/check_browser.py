@@ -63,5 +63,6 @@ def check_browser(url):
             const box=host.getBoundingClientRect();
             return Math.abs(gd.layout.height-(innerHeight-box.top-12))<2 && box.bottom<=innerHeight;
         }""")
-        print('Chromium scenario button updates displayed calendar timestamp: PASS')
+        print('Chromium scenario button updates displayed synthetic scenario: PASS')
         browser.close()
+
