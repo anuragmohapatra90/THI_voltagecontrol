@@ -36,3 +36,14 @@ Commands are applied to the original sgens, followed by actual AC power flow. If
 The sole plant addition is an explicitly simulated HV-side ratio tap changer: neutral 0, positions −8…+8, 1.25% per step. Its neutral AC solution is checked against the unmodified reference transformer. The benchmark exhaustively AC-evaluates all 17 taps and minimizes maximum voltage-band violation, then mean squared deviation from 1 pu, then distance from neutral. Its tap position is displayed. This is the best settled snapshot result, not a tap-motor timing simulation.
 
 Uncontrolled and OLTC cases keep DER commands zero. MLP+MPC keeps the transformer at neutral. All three use identical exogenous demand, PV and equipment. Displayed curves/maps are physical AC voltages, with no separate measurement-noise draw for each case. The chart separates the two actual feeder paths rather than connecting unrelated branch endpoints. Coincident curves remain possible in easy cases, and neither controller is guaranteed to perform best.
+
+
+## Dashboard diagnostics
+
+The action table reports applied control increments ΔP/ΔQ: controlled sgen injections minus uncontrolled sgen injections at the same DER bus. Positive supplies power, negative absorbs it. The original uncontrolled commands are zero. Signed limits use the original ±50 kW/kVar capability; a cell is marked MAX within half its 0.01 kW/kVar display resolution (0.005 kW/kVar) of either bound. A limited command is identified individually; the banner counts limited commands rather than claiming every resource is exhausted. Only limited MPC DER sites receive an orange outline.
+
+PV-site symbols reflect the original installations at buses 2–14, even when the daily profile or PV multiplier yields zero power. The PV power hover field comes from the scenario's scaled PV profile. It does not mistake the zero-command control sgens for zero installed PV. The colocated controllable resources remain at buses 5, 8 and 14.
+
+The per-bus diagnostic table compares the MLP prediction **after the applied MPC increments** with the actual AC voltages from that same controlled snapshot, in explicit bus-ID order. Error is prediction minus actual, in pu. It is not a prediction at zero action or a noisy sensor reading. The full objective shows both squared power penalties, both one-sided squared voltage violations, the MLP input mapping and the independent action bounds; P/Q in the objective use MW/MVAr, while the command table uses kW/kVar. Increasing a power penalty discourages that control action; increasing the voltage penalty prioritizes removing predicted violations.
+
+Scenario loading feedback runs in the browser before the solver request. Duplicate clicks are disabled during evaluation. A candidate scenario is solved separately and committed with its plot and diagnostics only on success; an error retains the previous scenario, and the button is re-enabled after either outcome.

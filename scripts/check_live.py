@@ -9,6 +9,7 @@ from dashboard import ScenarioExperiment, comparison_plot
 from active_grid import config
 from active_grid.oltc import best_oltc, oltc_score
 from live_control import prepare_controller, net_bus_pq
+from dashboard_diagnostics import control_deltas, diagnostics_html
 
 
 def check_live(lab=None):
@@ -37,6 +38,34 @@ def check_live(lab=None):
     for tap in range(lab.tap_min, lab.tap_max+1):
         trial.trafo.loc[lab.tid, 'tap_pos'] = tap
         assert selected <= oltc_score(lab, lab.solve(trial), tap)
+    # Match the displayed MLP prediction to these applied commands and this AC solve.
+    estimates=second['voltage_estimates']
+    assert estimates['Bus'].tolist()==c.bus_ids
+    bp,bq=net_bus_pq(second['baseline'],c.bus_ids)
+    dp=second['actions']['ΔP (kW)'].to_numpy()/1000
+    dq=second['actions']['ΔQ (kVar)'].to_numpy()/1000
+    predicted=c.predict_voltages(bp,bq,dp,dq)
+    actual=second['mpc'].res_bus.loc[c.bus_ids,'vm_pu'].to_numpy()
+    assert np.allclose(estimates['Estimate (pu)'],predicted)
+    assert np.allclose(estimates['Actual (pu)'],actual)
+    assert np.allclose(estimates['Error (pu)'],predicted-actual)
+    expected_cost=np.sum(dp**2)+.1*np.sum(dq**2)+1000*np.sum(np.maximum(0,.95-predicted)**2+np.maximum(0,predicted-1.05)**2)
+    assert np.isclose(expected_cost,second['flags']['objective'])
+    # Both signed bounds must be marked; ordinary commands must stay unmarked.
+    saturated=deepcopy(second['baseline'])
+    c.apply_setpoints(saturated,{5:.05,8:-.05,14:.01},{5:-.05,8:.01,14:.05})
+    actions,limits=control_deltas(second['baseline'],saturated,c.der_buses)
+    assert limits[['ΔP','ΔQ']].to_numpy().sum()==4
+    html=diagnostics_html({**second,'actions':actions,'at_limit':limits},lab)
+    assert html.count('class="max-label"')==4 and '4/6 commands' in html
+    assert 'ΔP (kW)' in html and 'ΔQ (kVar)' in html
+    assert 'Full MPC cost function' in html and '0.95' in html and '1.05' in html
+    old_seed=session.base['seed'];old_id=session.scenario_id
+    from dashboard import new_scenario
+    try:new_scenario(3,1,1,.1,1000,session)
+    except Exception:pass
+    else:raise AssertionError('Invalid scalers should fail without replacing the visible scenario')
+    assert session.base['seed']==old_seed and session.scenario_id==old_id
     # Physical sign and existing-element check, independently of the MLP.
     trial = deepcopy(second['baseline'])
     p0, q0 = net_bus_pq(trial, c.bus_ids)
@@ -65,13 +94,13 @@ def check_live(lab=None):
         after.append(lab.violation(f['y_mpc']))
         taps.append(lab.violation(f['y_oltc']))
         assert f['flags']['optimizer_action_applied']
-        commands = f['actions'][['P (kW)', 'Q (kVar)']].to_numpy()
+        commands = f['actions'][['ΔP (kW)', 'ΔQ (kVar)']].to_numpy()
         assert np.max(np.abs(commands)) <= 50.00001
         saturation.append(float(np.mean(np.abs(commands) >= 49.99)))
         actual_p, actual_q = net_bus_pq(f['mpc'], c.bus_ids)
         expected_p, expected_q = net_bus_pq(f['baseline'], c.bus_ids)
         for _, row in f['actions'].iterrows():
-            b = int(row['Bus']); expected_p[b] -= row['P (kW)']/1000; expected_q[b] -= row['Q (kVar)']/1000
+            b = int(row['Bus']); expected_p[b] -= row['ΔP (kW)']/1000; expected_q[b] -= row['ΔQ (kVar)']/1000
         assert np.allclose(actual_p, expected_p, atol=6e-6)
         assert np.allclose(actual_q, expected_q, atol=6e-6)
     assert np.mean(after) < .6*np.mean(before), (before, after)
@@ -84,6 +113,15 @@ def check_live(lab=None):
     plot = comparison_plot(f, lab).to_plotly_json()
     assert [t['name'] for t in plot['data'][:3]] == ['Uncontrolled', 'Best OLTC', 'MLP + MPC']
     assert plot['data'][0]['y'].count(None) == 2
+    maps=[t for t in plot['data'] if t.get('mode')=='markers+text']
+    assert len(maps)==3
+    for trace in maps:
+        symbols=trace['marker']['symbol']
+        assert symbols[:2]==['circle','circle']
+        for b in range(2,15):
+            assert symbols[b]==('diamond' if b in config.DER_BUSES else 'triangle-up')
+        assert np.allclose([r[4] for r in trace['customdata']], [f['pv_bus_kw'][b] for b in range(15)])
+    assert {t.get('name') for t in plot['data']} >= {'PV site','PV + DER','At limit'}
     assert set(plot['data'][0]['customdata']) == {str(b) for b in range(15)} | {''}
     print('Original ADG configuration, three-DER signs/bounds, reactive PQ, controller and exhaustive tap checks: PASS')
 
@@ -103,9 +141,12 @@ def check_server(lab):
         initial = client.predict(1, 1, 1, .1, 1000, api_name='/initial_snapshot')
         scaled = client.predict(2, 1, 1, .1, 1000, api_name='/react')
         new = client.predict(2, 1, 1, .1, 1000, api_name='/new_scenario')
-        assert initial[1] == scaled[1] and initial[0] != scaled[0]
-        assert new[1] != scaled[1]
-        assert 'Synthetic daily profile' in new[1] and 'OLTC tap position:' in new[2]
+        assert initial[2] == scaled[2] and initial[0] != scaled[0]
+        assert len(initial)==4 and initial[1].count('<tr data-bus=')==18
+        assert new[2] != scaled[2]
+        assert 'Synthetic daily profile' in new[2] and 'OLTC tap position:' in new[3]
+        assert 'MLP estimate vs actual' in new[1] and 'Full MPC cost function' in new[1]
+        assert 'ΔP (kW)' in new[1] and 'ΔQ (kVar)' in new[1]
         plot = json.loads(initial[0]['plot'])
         assert [t['name'] for t in plot['data'][:3]] == ['Uncontrolled', 'Best OLTC', 'MLP + MPC']
         types = [c['type'] for c in app.config['components']]
@@ -114,6 +155,8 @@ def check_server(lab):
         sliders = [c['props'] for c in app.config['components'] if c['type'] == 'slider']
         assert [(c['minimum'], c['maximum'], c['value']) for c in sliders] == [(.5, 2., 1.), (0., 2., 1.)]
         assert app.config['title'] == 'Voltage control for ADG'
+        gains=[c['props'] for c in app.config['components'] if c['type']=='number']
+        assert [g['info'] for g in gains]==['Higher: use less ΔP','Higher: use less ΔQ','Higher: stronger voltage correction']
         print('No-login Gradio, original slider ranges, new synthetic scenarios and three overlaid controls: PASS')
         if os.getenv('GRID_LAB_BROWSER_CHECK') == '1':
             from check_browser import check_browser

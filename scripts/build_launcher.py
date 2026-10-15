@@ -83,7 +83,7 @@ Modules are loaded from the refreshed checkout, including when you reuse an alre
 code('''import importlib, os, sys
 os.chdir(PROJECT_DIR)
 for name in list(sys.modules):
-    if name in ['grid_lab','plots','live_control','scenarios','dashboard','checks'] or name=='active_grid' or name.startswith('active_grid.'):
+    if name in ['grid_lab','plots','live_control','scenarios','dashboard','dashboard_assets','dashboard_diagnostics','checks'] or name=='active_grid' or name.startswith('active_grid.'):
         sys.modules.pop(name,None)
 sys.path.insert(0,str(PROJECT_DIR))
 importlib.invalidate_caches()

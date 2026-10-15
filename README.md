@@ -10,7 +10,11 @@ The grid, household loading, PV generation and three DER control sites come from
 2. Open the printed dashboard link in another tab. There is no dashboard login. Keep Colab connected.
 3. **Load new scenario** generates a fresh synthetic daily profile. Adjust load **×0.5–2** and PV **×0–2**, exactly as in the reference dashboard. The graph reacts automatically; changing sliders or MPC gains keeps the underlying scenario fixed.
 
-Setup stays on the left. The right shows three overlaid voltage curves, the three-DER action table and three network voltage maps. The selected OLTC tap is shown explicitly. The scenario time is a synthetic time of day, not a dated annual dataset.
+Setup stays on the left. The center overlays the three physical voltage curves and shows all three network maps. Triangles mark PV sites, diamonds mark PV sites with a control DER, and orange borders identify a limited MPC resource. Hover a site to see its current PV power, including zero generation at night.
+
+The right-hand diagnostics show **ΔP/ΔQ relative to uncontrolled**, with **MAX** badges when either signed ±50 kW/kVar limit is reached. Underneath are the MLP estimate, actual controlled AC voltage and signed error (estimate − actual) for every bus, followed by the complete MPC cost function and bounds. The scenario time is a synthetic time of day.
+
+**Load new scenario** immediately shows a loading label and spinner, disables duplicate clicks and marks the previous plot as pending. Results and diagnostics update together. Sidebar labels and values stay readable in light or dark browser themes. Gain hints explain the penalty direction: increasing kP/kQ discourages the corresponding power change; increasing kV puts more weight on voltage correction.
 
 After merging a PR, reopen the same GitHub-linked Colab URL, restart the runtime and Run all. No notebook uploads are needed. This repository is private, so the checkout still needs its read-only GitHub token through the Colab secret `GITHUB_TOKEN` or hidden prompt.
 
