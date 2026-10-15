@@ -120,8 +120,8 @@ def check_live(lab=None):
     old_seed=session.base['seed'];old_id=session.scenario_id
     from dashboard import new_scenario
     invalid=new_scenario(6,1,1,.1,1000,session)
-    assert invalid[0] is session and all(x=={'__type__':'update'} for x in invalid[1:5])
-    assert 'data-error="true"' in invalid[5]
+    assert invalid[0] is session and all(x=={'__type__':'update'} for x in invalid[1:6])
+    assert 'data-error="true"' in invalid[6]
     assert session.base['seed']==old_seed and session.scenario_id==old_id
     # Upper endpoints are real profile multipliers, with finite AC results when feasible.
     session.base=lab.generate_scenario(0)
@@ -140,8 +140,8 @@ def check_live(lab=None):
     session.base=lab.generate_scenario(6)
     previous_frame=session.last
     failed=update_configuration(5,0,1,.1,1000,session)
-    assert failed[0] is session and all(x=={'__type__':'update'} for x in failed[1:5])
-    assert 'Power flow failed' in failed[5] and 'Previous result kept' in failed[5]
+    assert failed[0] is session and all(x=={'__type__':'update'} for x in failed[1:6])
+    assert 'Power flow failed' in failed[6] and 'Previous result kept' in failed[6]
     assert session.last is previous_frame
     for lf,pf in [(float('nan'),1),(1,float('inf')),(1,-.1),(5.1,1),(1,5.1)]:
         try:session.sample(lf,pf)
@@ -238,23 +238,27 @@ def check_server(lab):
         initial = client.predict(1, 1, 1, .1, 1000, api_name='/initial_snapshot')
         scaled = client.predict(2, 1, 1, .1, 1000, api_name='/react')
         higher = client.predict(.5, 5, 1, .1, 1000, api_name='/react')
-        assert higher[2]==scaled[2] and higher[0]!=scaled[0]
+        assert higher[3]==scaled[3] and higher[0]!=scaled[0]
         failed = client.predict(5,0,1,.1,1000,api_name='/react')
-        assert 'Power flow failed' in failed[4] and 'data-error="true"' in failed[4]
+        assert 'Power flow failed' in failed[5] and 'data-error="true"' in failed[5]
         recovered = client.predict(1,1,1,.1,1000,api_name='/react')
-        assert recovered[2]==higher[2] and 'data-error="false"' in recovered[4]
+        assert recovered[3]==higher[3] and 'data-error="false"' in recovered[5]
         new = client.predict(2, 1, 1, .1, 1000, api_name='/new_scenario')
-        assert initial[2] == scaled[2] and initial[0] != scaled[0]
-        assert len(initial)==5 and initial[1].count('<tr data-bus=')==18
-        assert new[2] != scaled[2]
-        assert 'Synthetic daily profile' in new[2] and 'OLTC tap position:' in new[3]
-        assert 'MLP estimate vs actual' in new[1] and 'Full MPC cost function' in new[1]
-        assert 'ΔP (kW)' in new[1] and 'ΔQ (kVar)' in new[1]
+        assert initial[3] == scaled[3] and initial[0] != scaled[0]
+        assert len(initial)==6 and initial[2].count('<tr data-bus=')==18
+        assert new[3] != scaled[3]
+        assert 'Synthetic daily profile' in new[3] and 'OLTC tap position:' in new[4]
+        assert 'MLP estimate vs actual' in new[2] and 'Full MPC cost function' in new[2]
+        assert 'ΔP (kW)' in new[2] and 'ΔQ (kVar)' in new[2]
         plot = json.loads(initial[0]['plot'])
         assert [t['name'] for t in plot['data'][:3]] == ['Uncontrolled', 'OLTC', 'MLP + MPC']
+        informed_plot=json.loads(initial[1]['plot'])
+        assert plot['data'][0]['y']==informed_plot['data'][0]['y']
+        assert plot['data'][2]['y']==informed_plot['data'][2]['y']
+        assert informed_plot['layout']['meta']['oltc_mode']=='mlp'
         types = [c['type'] for c in app.config['components']]
-        assert types.count('button') == 1 and types.count('plot') == 1
-        assert not {'dropdown', 'tabs', 'tabitem', 'timer', 'radio', 'checkbox'} & set(types)
+        assert types.count('button') == 1 and types.count('plot') == 2 and types.count('tabs') == 1 and types.count('tabitem') == 2
+        assert not {'dropdown', 'timer', 'radio', 'checkbox'} & set(types)
         sliders = [c['props'] for c in app.config['components'] if c['type'] == 'slider']
         assert [(c['minimum'], c['maximum'], c['value']) for c in sliders] == [(.5, 5., 1.), (0., 5., 1.)]
         assert app.config['title'] == 'Voltage control for ADG'

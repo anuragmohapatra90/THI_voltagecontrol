@@ -44,6 +44,8 @@ class GridLab:
             self.net.trafo.loc[self.tid, key] = value
         self.voltage_controller = None
         self.training_report = None
+        self.tap_estimator = None
+        self.tap_training_report = None
 
     def new_net(self):
         return deepcopy(self.net)

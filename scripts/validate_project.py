@@ -49,6 +49,8 @@ def main():
     print(run_checks(lab))
     assert lab.metadata()['source_commit']=='local-test-commit'
     from check_live import check_live,check_server
+    from check_informed import check_informed
+    check_informed(lab)
     check_live(lab)
     check_server(lab)
     print('Thin notebook, source compilation, physical checks, live UI behavior, and commit metadata: PASS')

@@ -29,6 +29,7 @@ html,body {margin:0;height:100%;overflow:hidden}
 #controls #new-scenario:disabled {opacity:1!important;background:#4b6570!important;border-color:#4b6570!important}
 #controls #new-scenario[data-busy="true"],#controls #new-scenario[data-busy="true"] * {color:transparent!important;-webkit-text-fill-color:transparent!important;pointer-events:none}
 #controls #new-scenario[data-busy="true"]::after {content:'Loading scenario…';position:absolute;inset:0;display:grid;place-items:center;color:#fff!important;-webkit-text-fill-color:#fff!important}
+#feedback-host {flex:0 0 auto!important;min-height:44px!important;overflow:visible!important}
 #scenario-feedback {color:#405a6b;font-size:10px;line-height:12px;min-height:16px;height:44px;overflow:auto;box-sizing:border-box}
 #scenario-feedback[data-error="true"] {color:#8c3026!important;background:#fff1ee;border-radius:4px;padding:3px 5px}
 #scenario-feedback[data-busy="true"] {font-size:0!important;color:transparent!important;background:transparent;padding:0}
@@ -36,10 +37,17 @@ html,body {margin:0;height:100%;overflow:hidden}
 #scenario-feedback[data-busy="true"]::before {content:'';display:inline-block;width:9px;height:9px;margin-right:6px;
  border:2px solid #b7c8d2;border-top-color:#087b64;border-radius:50%;animation:scenario-spin .7s linear infinite}
 @keyframes scenario-spin {to {transform:rotate(360deg)}}
-#comparison {flex:1!important;min-width:0!important;min-height:0!important;height:100%;padding:0!important;border:0!important}
-#comparison > div {min-height:0}
-#comparison [data-testid="plotly"] {height:100%!important;width:100%!important}
-#comparison[aria-busy="true"] .js-plotly-plot {opacity:.48;transition:opacity .12s}
+.comparison-plot {flex:1!important;min-width:0!important;min-height:0!important;height:100%;padding:0!important;border:0!important}
+.comparison-plot > div {min-height:0}
+.comparison-plot [data-testid="plotly"] {height:100%!important;width:100%!important}
+.comparison-plot[aria-busy="true"] .js-plotly-plot {opacity:.48;transition:opacity .12s}
+#comparison-column {flex:1!important;min-width:0!important;min-height:0!important;gap:0!important}
+#controller-tabs {flex:1;min-height:0;padding:0!important;border:0!important;background:#fff!important}
+#controller-tabs > .tab-nav {flex:0 0 auto;min-height:32px}
+#controller-tabs button {font-size:12px;color:#172b3a!important;background:#f6f8fa!important}
+#controller-tabs button[aria-selected='true'] {color:#087b64!important;border-bottom:2px solid #087b64!important;background:#fff!important}
+#controller-tabs [role='tabpanel'] {padding:0!important;border:0!important;background:#fff!important}
+#controller-tabs [role='tabpanel'] > .block {padding:0!important}
 #gain-row {gap:5px;flex-wrap:nowrap!important}
 #gain-row > div {min-width:0!important}
 #gain-row label,#gain-row label span {font-size:11px!important;background:transparent!important}
@@ -84,31 +92,35 @@ footer {display:none!important}
 '''
 
 LAYOUT_JS = '''() => {
-  const host=document.getElementById('comparison');
+  const column=document.getElementById('comparison-column');
   const panel=document.getElementById('diagnostics-panel');
-  if (!host || host.dataset.fitted) return;
-  host.dataset.fitted='true';
+  if (!column || column.dataset.fitted) return;
+  column.dataset.fitted='true';
   let pending=false;
   const fit=()=>{
     pending=false;
-    const gd=host.querySelector('.js-plotly-plot');
-    if (!gd || !window.Plotly || !gd.layout) return;
-    if (!gd._gridSizingHook) {gd._gridSizingHook=true;gd.on('plotly_afterplot',schedule);}
-    const box=host.getBoundingClientRect();
-    const height=Math.max(300,Math.floor(innerHeight-box.top-12));
-    const width=Math.floor(box.width);
-    if (Math.abs(box.height-height)>1) host.style.height=height+'px';
     if (panel) {
-      panel.style.height=height+'px';
+      const h=Math.floor(innerHeight-panel.getBoundingClientRect().top-12);
+      panel.style.height=h+'px';
       const content=panel.querySelector('.diagnostic-layout');
-      if (content) content.style.height=(height-18)+'px';
+      if (content) content.style.height=(h-18)+'px';
     }
-    if (Math.abs((gd.layout.height||0)-height)>1 || Math.abs((gd.layout.width||0)-width)>1)
-      window.Plotly.relayout(gd,{height,width});
+    for (const host of column.querySelectorAll('.comparison-plot')) {
+      const box=host.getBoundingClientRect();
+      if (!box.width || !box.height) continue;
+      const gd=host.querySelector('.js-plotly-plot');
+      if (!gd || !window.Plotly || !gd.layout) continue;
+      if (!gd._gridSizingHook) {gd._gridSizingHook=true;gd.on('plotly_afterplot',schedule);}
+      const height=Math.max(300,Math.floor(innerHeight-box.top-12));
+      const width=Math.floor(box.width);
+      if (Math.abs(box.height-height)>1) host.style.height=height+'px';
+      if (Math.abs((gd.layout.height||0)-height)>1 || Math.abs((gd.layout.width||0)-width)>1)
+        window.Plotly.relayout(gd,{height,width});
+    }
   };
   const schedule=()=>{if (!pending) {pending=true;requestAnimationFrame(fit);}};
-  new ResizeObserver(schedule).observe(host);
-  new MutationObserver(schedule).observe(host,{childList:true,subtree:true});
+  new ResizeObserver(schedule).observe(column);
+  new MutationObserver(schedule).observe(column,{childList:true,subtree:true,attributes:true,attributeFilter:['hidden','aria-selected']});
   if (panel) new MutationObserver(schedule).observe(panel,{childList:true,subtree:true});
   addEventListener('resize',schedule);schedule();
 }'''
@@ -116,21 +128,23 @@ LAYOUT_JS = '''() => {
 BEGIN_SCENARIO_JS = '''() => {
   const button=document.getElementById('new-scenario');
   const feedback=document.getElementById('scenario-feedback');
-  const graph=document.getElementById('comparison');
+  const graphs=document.querySelectorAll('.comparison-plot');
   document.getElementById('controls')?.setAttribute('inert','');
+  document.getElementById('controller-tabs')?.setAttribute('inert','');
   if (button) {button.disabled=true;button.dataset.busy='true';button.setAttribute('aria-label','Loading scenario');}
   if (feedback) {feedback.dataset.busy='true';feedback.setAttribute('aria-busy','true');}
-  if (graph) graph.setAttribute('aria-busy','true');
+  graphs.forEach(graph=>graph.setAttribute('aria-busy','true'));
   return [];
 }'''
 
 END_SCENARIO_JS = '''() => {
   const button=document.getElementById('new-scenario');
   const feedback=document.getElementById('scenario-feedback');
-  const graph=document.getElementById('comparison');
+  const graphs=document.querySelectorAll('.comparison-plot');
   document.getElementById('controls')?.removeAttribute('inert');
+  document.getElementById('controller-tabs')?.removeAttribute('inert');
   if (button) {button.disabled=false;delete button.dataset.busy;button.removeAttribute('aria-label');}
   if (feedback) {delete feedback.dataset.busy;feedback.setAttribute('aria-busy','false');}
-  if (graph) graph.setAttribute('aria-busy','false');
+  graphs.forEach(graph=>graph.setAttribute('aria-busy','false'));
   return [];
 }'''
