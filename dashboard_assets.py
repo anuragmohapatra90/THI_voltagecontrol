@@ -29,7 +29,7 @@ html,body {margin:0;height:100%;overflow:hidden}
 #controls #new-scenario:disabled {opacity:1!important;background:#4b6570!important;border-color:#4b6570!important}
 #controls #new-scenario[data-busy="true"],#controls #new-scenario[data-busy="true"] * {color:transparent!important;-webkit-text-fill-color:transparent!important;pointer-events:none}
 #controls #new-scenario[data-busy="true"]::after {content:'Loading scenario…';position:absolute;inset:0;display:grid;place-items:center;color:#fff!important;-webkit-text-fill-color:#fff!important}
-#feedback-host {flex:0 0 44px!important;min-height:44px!important;overflow:visible!important}
+#feedback-host {flex:0 0 auto!important;min-height:44px!important;overflow:visible!important}
 #scenario-feedback {color:#405a6b;font-size:10px;line-height:12px;min-height:16px;height:44px;overflow:auto;box-sizing:border-box}
 #scenario-feedback[data-error="true"] {color:#8c3026!important;background:#fff1ee;border-radius:4px;padding:3px 5px}
 #scenario-feedback[data-busy="true"] {font-size:0!important;color:transparent!important;background:transparent;padding:0}
