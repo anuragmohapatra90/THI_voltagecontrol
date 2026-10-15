@@ -44,7 +44,29 @@ def run_checks(lab=None):
     trial.trafo.loc[lab.tid, 'tap_pos'] = 1
     moved = lab.solve(trial)
     assert np.max(np.abs(moved-y)) > .005
+    assert (lab.tap_min,lab.tap0,lab.tap_max)==(-4,0,4)
+    assert lab.net.trafo.loc[lab.tid,'tap_side']=='lv'
+    assert lab.net.trafo.loc[lab.tid,'tap_step_percent']==1.25
+    # Isolate the transformer ratio: remove loads, excitation and line charging in this test only.
+    ratio_net=lab.new_net()
+    ratio_net.load.loc[:,['p_mw','q_mvar']]=0.
+    ratio_net.sgen.loc[:,['p_mw','q_mvar']]=0.
+    ratio_net.trafo.loc[lab.tid,['pfe_kw','i0_percent']]=0.
+    ratio_net.line.loc[:,['c_nf_per_km','g_us_per_km']]=0.
+    endpoints=[]
+    for tap in range(lab.tap_min,lab.tap_max+1):
+        ratio_net.trafo.loc[lab.tid,'tap_pos']=tap
+        lab.solve(ratio_net)
+        voltage=float(ratio_net.res_bus.loc[lab.lv_bus,'vm_pu'])
+        assert np.isclose(voltage,1+tap*.0125,atol=1e-9,rtol=0), (tap,voltage)
+        endpoints.append(voltage)
+    assert np.allclose([endpoints[0],endpoints[-1]],[.95,1.05],atol=1e-9)
+    for tap in [-5,5,.5,float('nan')]:
+        ratio_net.trafo.loc[lab.tid,'tap_pos']=tap
+        try:lab.solve(ratio_net)
+        except ValueError:pass
+        else:raise AssertionError('An invalid/out-of-range tap must be rejected')
     assert GridLab(lab.cfg).grid_fingerprint() == lab.grid_fingerprint()
     return {'upstream_files': 'byte-identical', 'grid_profiles': 'reference parity passed',
-            'neutral_AC': 'reference parity passed', 'OLTC_voltage_response': 'passed',
+            'neutral_AC': 'reference parity passed', 'OLTC_voltage_response': 'passed', 'secondary_reference_range_pu': [endpoints[0],endpoints[-1]],
             'control_sites': config.DER_BUSES}

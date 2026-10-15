@@ -29,7 +29,10 @@ html,body {margin:0;height:100%;overflow:hidden}
 #controls #new-scenario:disabled {opacity:1!important;background:#4b6570!important;border-color:#4b6570!important}
 #controls #new-scenario[data-busy="true"],#controls #new-scenario[data-busy="true"] * {color:transparent!important;-webkit-text-fill-color:transparent!important;pointer-events:none}
 #controls #new-scenario[data-busy="true"]::after {content:'Loading scenario…';position:absolute;inset:0;display:grid;place-items:center;color:#fff!important;-webkit-text-fill-color:#fff!important}
-#scenario-feedback {color:#405a6b;font-size:11px;line-height:16px;min-height:16px}
+#scenario-feedback {color:#405a6b;font-size:10px;line-height:12px;min-height:16px;height:44px;overflow:auto;box-sizing:border-box}
+#scenario-feedback[data-error="true"] {color:#8c3026!important;background:#fff1ee;border-radius:4px;padding:3px 5px}
+#scenario-feedback[data-busy="true"] {font-size:0!important;color:transparent!important;background:transparent;padding:0}
+#scenario-feedback[data-busy="true"]::after {content:'Solving power flow and MPC…';font-size:10px;color:#405a6b;-webkit-text-fill-color:#405a6b}
 #scenario-feedback[data-busy="true"]::before {content:'';display:inline-block;width:9px;height:9px;margin-right:6px;
  border:2px solid #b7c8d2;border-top-color:#087b64;border-radius:50%;animation:scenario-spin .7s linear infinite}
 @keyframes scenario-spin {to {transform:rotate(360deg)}}
@@ -114,8 +117,9 @@ BEGIN_SCENARIO_JS = '''() => {
   const button=document.getElementById('new-scenario');
   const feedback=document.getElementById('scenario-feedback');
   const graph=document.getElementById('comparison');
+  document.getElementById('controls')?.setAttribute('inert','');
   if (button) {button.disabled=true;button.dataset.busy='true';button.setAttribute('aria-label','Loading scenario');}
-  if (feedback) {feedback.dataset.busy='true';feedback.textContent='Solving power flow and MPC…';}
+  if (feedback) {feedback.dataset.busy='true';feedback.setAttribute('aria-busy','true');}
   if (graph) graph.setAttribute('aria-busy','true');
   return [];
 }'''
@@ -124,8 +128,9 @@ END_SCENARIO_JS = '''() => {
   const button=document.getElementById('new-scenario');
   const feedback=document.getElementById('scenario-feedback');
   const graph=document.getElementById('comparison');
+  document.getElementById('controls')?.removeAttribute('inert');
   if (button) {button.disabled=false;delete button.dataset.busy;button.removeAttribute('aria-label');}
-  if (feedback) {delete feedback.dataset.busy;feedback.textContent='Ready';}
+  if (feedback) {delete feedback.dataset.busy;feedback.setAttribute('aria-busy','false');}
   if (graph) graph.setAttribute('aria-busy','false');
   return [];
 }'''

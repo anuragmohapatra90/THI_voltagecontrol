@@ -1,6 +1,7 @@
 """ADG's sidebar/profile/actions/heatmap layout, comparing all three controls."""
 from dataclasses import dataclass,field
 from copy import deepcopy,copy
+from html import escape
 import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
@@ -9,7 +10,7 @@ import gradio as gr
 from pandapower import LoadflowNotConverged
 from grid_lab import GridLab
 from active_grid import config
-from active_grid.oltc import best_oltc,oltc_score
+from active_grid.local_oltc import settle_oltc
 from live_control import prepare_controller,voltage_violation
 from dashboard_diagnostics import control_deltas,voltage_diagnostics,diagnostics_html
 from dashboard_assets import CSS,LAYOUT_JS,BEGIN_SCENARIO_JS,END_SCENARIO_JS
@@ -23,6 +24,7 @@ class ScenarioExperiment:
     lab: object
     rng: object = field(default_factory=np.random.default_rng)
     scenario_id: int = 0
+    tap_pos: int = 0
     base: dict = field(default_factory=dict)
     last: dict = field(default_factory=dict)
 
@@ -41,20 +43,21 @@ class ScenarioExperiment:
         baseline=lab.new_net()
         lab.set_snapshot(baseline,self.base,lf,pf)
         y_base=lab.solve(baseline)
-        oltc,y_oltc,tap=best_oltc(lab,baseline)
+        oltc,y_oltc,tap,oltc_flags=settle_oltc(lab,baseline,self.tap_pos)
         mpc=deepcopy(baseline)
         y_mpc,p_set,q_set,flags=controller.run_snapshot(lab,mpc,weights)
         actions,at_limit=control_deltas(baseline,mpc,controller.der_buses)
         estimates=voltage_diagnostics(flags['predicted_voltages'],mpc,controller.bus_ids)
         self.last={'scenario_id':self.scenario_id,'scenario_seed':self.base['seed'],
             'hour':self.base['hour'],'baseline':baseline,'oltc':oltc,'mpc':mpc,
-            'y_base':y_base,'y_oltc':y_oltc,'y_mpc':y_mpc,'tap_pos':tap,
+            'y_base':y_base,'y_oltc':y_oltc,'y_mpc':y_mpc,'tap_pos':tap,'oltc_flags':oltc_flags,
             'actions':actions,'at_limit':at_limit,'voltage_estimates':estimates,'flags':flags,'load_factor':float(lf),'pv_factor':float(pf),
             'gross_load_p_kw':float(self.base['load_p'].sum()*lf*1000),
             'load_q_kvar':float(self.base['load_q'].sum()*lf*1000),
             'pv_kw':float(self.base['pv'].sum()*pf*1000),
             'pv_buses':sorted(set(map(int,lab.net.sgen.bus))),
             'pv_bus_kw':{int(b):float(self.base['pv'][b]*pf*1000) for b in lab.net.bus.index}}
+        self.tap_pos=tap
         return self.last
 
 
@@ -81,6 +84,7 @@ def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
             xx.extend([a[0],b[0],None]);yy.extend([a[1],b[1],None])
     fig.add_trace(go.Scatter(x=xx,y=yy,mode='lines',line={'color':'#9aa4ae','width':1.5},
         hoverinfo='skip',showlegend=False),row=2,col=column)
+    lab_bus=1
     buses=list(net.bus.index);pv_buses=set(frame['pv_buses']);der_buses=set(config.DER_BUSES)
     limited=set(frame['at_limit'].loc[frame['at_limit'][['ΔP','ΔQ']].any(axis=1),'Bus']) if is_mpc else set()
     load=net.load.groupby('bus')[['p_mw','q_mvar']].sum()
@@ -90,8 +94,8 @@ def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
         data.append([int(b),float(net.res_bus.loc[b,'vm_pu']),float(load.p_mw.get(b,0)*1000),
             float(load.q_mvar.get(b,0)*1000),frame['pv_bus_kw'].get(int(b),0.),
             float(generation.p_mw.get(b,0)*1000),float(generation.q_mvar.get(b,0)*1000),
-            'PV + control DER' if b in der_buses else ('PV site' if b in pv_buses else 'Grid supply'),
-            'LIMIT REACHED' if b in limited else ''])
+            'LV busbar · OLTC sensor' if b==lab_bus else ('PV + control DER' if b in der_buses else ('PV site' if b in pv_buses else 'Grid supply')),
+            'LIMIT REACHED' if b in limited else ('OLTC band: 0.99–1.01 pu' if b==lab_bus else '')])
     fig.add_trace(go.Scatter(x=[positions[int(b)][0] for b in buses],y=[positions[int(b)][1] for b in buses],
         mode='markers+text',text=[str(b) for b in buses],textposition='top center',textfont={'size':8},customdata=data,
         hovertemplate='Bus %{customdata[0]} · %{customdata[7]}<br>V %{customdata[1]:.5f} pu<br>PV P %{customdata[4]:.2f} kW<br>Base net P %{customdata[2]:.2f} kW<br>Base Q %{customdata[3]:.2f} kVar<br>ΔP %{customdata[5]:.2f} kW · ΔQ %{customdata[6]:.2f} kVar<br>%{customdata[8]}<extra></extra>',
@@ -110,7 +114,7 @@ def comparison_plot(frame,lab):
     fig=make_subplots(rows=2,cols=3,specs=[[{'colspan':3},None,None],[{},{},{}]],
         column_widths=[1/3]*3,row_heights=[.52,.48],vertical_spacing=.17,horizontal_spacing=.05,
         subplot_titles=['Voltage Profiles · Feeder Order','Uncontrolled',
-                        f'Best OLTC · Tap {frame["tap_pos"]:+d}','MLP + MPC'])
+                        f'Local OLTC · Tap {frame["tap_pos"]:+d}','MLP + MPC'])
     paths=[[0,1,*range(2,9)],[1,*range(9,15)]]
     bus=[]
     for path in paths:bus.extend(path+[None])
@@ -121,11 +125,11 @@ def comparison_plot(frame,lab):
         for b in bus]
     voltage_hover=('<b>Bus %{customdata[0]}</b> · actual AC voltage<br>'
         'Uncontrolled: %{customdata[1]:.5f} pu<br>'
-        'Best OLTC: %{customdata[2]:.5f} pu<br>'
+        'OLTC: %{customdata[2]:.5f} pu<br>'
         'MLP + MPC: %{customdata[3]:.5f} pu<extra></extra>')
     for key,name,color,symbol,dash in [
         ('baseline','Uncontrolled','#ed9b2d','circle','dash'),
-        ('oltc','Best OLTC','#4574c6','diamond','solid'),
+        ('oltc','OLTC','#4574c6','diamond','solid'),
         ('mpc','MLP + MPC','#16876b','square','solid')]:
         v=[None if b is None else float(frame[key].res_bus.loc[b,'vm_pu']) for b in bus]
         values.extend(a for a in v if a is not None)
@@ -150,39 +154,57 @@ def comparison_plot(frame,lab):
         legend={'orientation':'h','x':0,'y':1,'yref':'container','yanchor':'top','itemclick':False,'itemdoubleclick':False,'font':{'size':10}},
         coloraxis={'colorscale':'RdBu','cmin':.90,'cmax':1.10,
             'colorbar':{'title':'V (pu)','orientation':'h','x':.5,'y':-.04,'len':.5,'thickness':10}},
-        hovermode='closest',uirevision='grid-comparison',meta={'scenario_id':frame['scenario_id']})
+        hovermode='closest',uirevision='grid-comparison',meta={'scenario_id':frame['scenario_id'],'scenario_seed':frame['scenario_seed'],
+            'load_factor':frame['load_factor'],'pv_factor':frame['pv_factor']})
     fig.update_annotations(font_size=11)
     return fig
 
 
-def update_configuration(lf,pf,wp,wq,wv,session):
+def feedback_html(message='Ready', *, error=False):
+    flag='true' if error else 'false'
+    role='alert' if error else 'status'
+    return f'<div id="scenario-feedback" data-error="{flag}" role="{role}" aria-live="polite">{escape(message)}</div>'
+
+
+def _failed_snapshot(session,message):
+    # A recoverable solve error is a completed UI response, with no partial results.
+    return session,gr.skip(),gr.skip(),gr.skip(),gr.skip(),feedback_html(message,error=True)
+
+
+def _evaluate_configuration(lf,pf,wp,wq,wv,session,*,resample=False):
+    # RNG advances on a failed draw; displayed scenario and results commit only on success.
+    candidate=copy(session)
     try:
-        frame=session.sample(lf,pf,(wp,wq,wv))
+        if resample:candidate.new_scenario()
+        frame=candidate.sample(lf,pf,(wp,wq,wv))
         minutes=int(frame['hour']*60)
         caption=f"**Scenario {frame['scenario_id']} · {minutes//60:02d}:{minutes%60:02d}**  \nSynthetic daily profile"
-        safe='within limits' if voltage_violation(session.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
-        status=f'**OLTC tap position: {frame["tap_pos"]:+d}**  \nMLP + MPC voltage: {safe}'
-        return session,comparison_plot(frame,session.lab),diagnostics_html(frame,session.lab),caption,status
-    except LoadflowNotConverged as exc:
-        raise gr.Error(f'Power flow did not converge at load ×{float(lf):g}, PV ×{float(pf):g}. '
-            'The previous result is retained. Reduce a scale or load another scenario.') from exc
-    except Exception as exc:raise gr.Error(str(exc)) from exc
+        safe='within limits' if voltage_violation(candidate.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
+        status=f'**OLTC tap position: {frame["tap_pos"]:+d}** · ±5%  \nV₁ {frame["oltc_flags"]["secondary_voltage_pu"]:.3f} pu · MPC {safe}'
+        plot=comparison_plot(frame,candidate.lab)
+        diagnostics=diagnostics_html(frame,candidate.lab)
+        return candidate,plot,diagnostics,caption,status,feedback_html()
+    except LoadflowNotConverged:
+        return _failed_snapshot(session,f'Power flow failed (load ×{float(lf):g}, PV ×{float(pf):g}). '
+            'Previous result kept. Reduce scales or load another scenario.')
+    except Exception as exc:
+        return _failed_snapshot(session,f'Simulation failed: {exc}. Previous result kept.')
+
+
+def update_configuration(lf,pf,wp,wq,wv,session):
+    return _evaluate_configuration(lf,pf,wp,wq,wv,session)
 
 
 def new_scenario(lf,pf,wp,wq,wv,session):
-    # Keep the displayed snapshot atomic, while a failed attempt still advances the RNG.
-    candidate=copy(session)
-    candidate.new_scenario()
-    return update_configuration(lf,pf,wp,wq,wv,candidate)
+    return _evaluate_configuration(lf,pf,wp,wq,wv,session,resample=True)
 
 
-
-def build_dashboard(lab=None):
+def build_dashboard(lab=None, *, scenario_seed=None):
     seed=lab or GridLab()
     if getattr(seed,'voltage_controller',None) is None:
         print('Preparing ADG MLP + MPC controller…',flush=True);prepare_controller(seed);print('MLP ready.',flush=True)
     with gr.Blocks(title='Voltage control for ADG',analytics_enabled=False,fill_height=True) as app:
-        state=gr.State(value=lambda:ScenarioExperiment(deepcopy(seed)))
+        state=gr.State(value=lambda:ScenarioExperiment(deepcopy(seed),rng=np.random.default_rng(scenario_seed)))
         gr.Markdown('# Voltage control for ADG',elem_id='title')
         with gr.Row(elem_id='workspace'):
             with gr.Column(elem_id='controls'):
@@ -190,19 +212,19 @@ def build_dashboard(lab=None):
                 load=gr.Button('Load new scenario',variant='primary',elem_id='new-scenario')
                 timestamp=gr.Markdown('')
                 gr.Markdown('### 2. Operational Adjustments')
-                lf=gr.Slider(.5,MAX_SCENARIO_SCALE,value=1.,step=.05,label='Load Scaling Factor')
-                pf=gr.Slider(0.,MAX_SCENARIO_SCALE,value=1.,step=.05,label='PV Generation Factor')
+                lf=gr.Slider(.5,MAX_SCENARIO_SCALE,value=1.,step=.05,label='Load Scaling Factor',elem_id='load-scale')
+                pf=gr.Slider(0.,MAX_SCENARIO_SCALE,value=1.,step=.05,label='PV Generation Factor',elem_id='pv-scale')
                 gr.Markdown('### MPC Gains')
                 with gr.Row(elem_id='gain-row'):
                     wp=gr.Number(1.,minimum=0,label='kP · ΔP cost',info='Higher: use less ΔP',step=.1,min_width=65,elem_id='gain-p')
                     wq=gr.Number(.1,minimum=0,label='kQ · ΔQ cost',info='Higher: use less ΔQ',step=.1,min_width=65,elem_id='gain-q')
                     wv=gr.Number(1000.,minimum=0,label='kV · voltage',info='Higher: stronger voltage correction',step=100.,min_width=65,elem_id='gain-v')
                 status=gr.Markdown('')
-                gr.HTML('<div id="scenario-feedback" role="status" aria-live="polite">Ready</div>')
+                feedback=gr.HTML(feedback_html(),elem_id='feedback-host')
             graph=gr.Plot(show_label=False,elem_id='comparison')
             with gr.Column(elem_id='diagnostics-panel'):
                 diagnostics=gr.HTML('',elem_id='diagnostics')
-        inputs=[lf,pf,wp,wq,wv,state];outputs=[state,graph,diagnostics,timestamp,status]
+        inputs=[lf,pf,wp,wq,wv,state];outputs=[state,graph,diagnostics,timestamp,status,feedback]
         common={'concurrency_limit':1,'concurrency_id':'scenario_grid','show_progress':'hidden'}
         gr.on([lf.input,pf.input,wp.change,wq.change,wv.change],update_configuration,inputs,outputs,
             api_name='react',trigger_mode='always_last',**common)

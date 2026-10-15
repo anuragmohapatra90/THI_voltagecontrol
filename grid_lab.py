@@ -32,10 +32,14 @@ class GridLab:
         self.lv_bus = 1
         self.bus_ids = np.arange(1, config.BUS_COUNT)
         self.nv = len(self.bus_ids)
-        self.tap0, self.tap_min, self.tap_max = 0, -8, 8
-        # The only plant addition. At neutral its AC solution equals the reference.
-        for key, value in dict(tap_side='hv', tap_neutral=0, tap_pos=0, tap_min=-8,
-                tap_max=8, tap_step_percent=1.25, tap_step_degree=0, oltc=True,
+        self.tap0, self.tap_min, self.tap_max = 0, -4, 4
+        self.tap_step_percent = 1.25
+        # Local relay setting for this experiment, distinct from the bus safety band.
+        self.oltc_v_min, self.oltc_v_max = .99, 1.01
+        # A secondary-reference ratio trim: exactly 0.95–1.05 at ideal no load.
+        # Positive taps raise LV voltage; neutral preserves the reference AC solution.
+        for key, value in dict(tap_side='lv', tap_neutral=self.tap0, tap_pos=self.tap0, tap_min=self.tap_min,
+                tap_max=self.tap_max, tap_step_percent=self.tap_step_percent, tap_step_degree=0, oltc=True,
                 tap_changer_type='Ratio').items():
             self.net.trafo.loc[self.tid, key] = value
         self.voltage_controller = None
@@ -67,7 +71,10 @@ class GridLab:
         return p, q
 
     def solve(self, net):
-        pp.runpp(net, algorithm='nr', numba=False)
+        tap=float(net.trafo.loc[self.tid,'tap_pos'])
+        if not np.isfinite(tap) or not self.tap_min<=tap<=self.tap_max or not tap.is_integer():
+            raise ValueError(f'OLTC tap must be an integer in [{self.tap_min}, {self.tap_max}].')
+        pp.runpp(net, algorithm='nr', numba=False, max_iteration=10)
         v = net.res_bus.loc[self.bus_ids, 'vm_pu'].to_numpy(float)
         if not np.isfinite(v).all():
             raise ValueError('Nonfinite AC voltages; this snapshot is invalid.')

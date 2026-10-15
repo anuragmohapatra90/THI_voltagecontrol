@@ -8,6 +8,7 @@ from grid_lab import GridLab
 from dashboard import ScenarioExperiment, comparison_plot
 from active_grid import config
 from active_grid.oltc import best_oltc, oltc_score
+from active_grid.local_oltc import settle_oltc
 from live_control import prepare_controller, net_bus_pq
 from dashboard_diagnostics import control_deltas, diagnostics_html
 
@@ -34,10 +35,52 @@ def check_live(lab=None):
     assert (second['baseline'].sgen[['p_mw', 'q_mvar']] == 0).all().all()
     assert (second['oltc'].sgen[['p_mw', 'q_mvar']] == 0).all().all()
     trial = deepcopy(second['baseline'])
-    selected = oltc_score(lab, second['y_oltc'], second['tap_pos'])
+    _,oracle_y,oracle_tap=best_oltc(lab,second['baseline'])
+    selected = oltc_score(lab, oracle_y, oracle_tap)
     for tap in range(lab.tap_min, lab.tap_max+1):
         trial.trafo.loc[lab.tid, 'tap_pos'] = tap
         assert selected <= oltc_score(lab, lab.solve(trial), tap)
+    # A local relay cannot see the unsafe feeder end if the secondary bus remains in band.
+    neutral=lab.new_net();lab.set_snapshot(neutral,lab.generate_scenario(6))
+    neutral_y=lab.solve(neutral)
+    assert lab.oltc_v_min<=neutral.res_bus.loc[1,'vm_pu']<=lab.oltc_v_max
+    assert lab.violation(neutral_y)>0
+    local_net,local_y,local_tap,local_flags=settle_oltc(lab,neutral)
+    assert local_tap==0 and np.allclose(local_y,neutral_y)
+    assert local_flags['measured_bus']==1 and local_flags['steps']==0
+    # A stronger real load draw moves the existing secondary bus enough to trigger a tap.
+    heavy=lab.new_net();lab.set_snapshot(heavy,lab.generate_scenario(6),3,0)
+    lab.solve(heavy)
+    assert heavy.res_bus.loc[1,'vm_pu']<lab.oltc_v_min
+    result,_,tap,flags=settle_oltc(lab,heavy)
+    assert tap>0 and flags['steps']>0
+    assert lab.oltc_v_min<=flags['secondary_voltage_pu']<=lab.oltc_v_max
+    # Secondary voltage moves independently of the MV slack; one-step actions have the right sign.
+    unloaded=lab.new_net()
+    for source,direction in [(.97,1),(1.04,-1)]:
+        unloaded.ext_grid.loc[:,'vm_pu']=source
+        result,y,tap,flags=settle_oltc(lab,unloaded)
+        assert direction*tap>0 and lab.oltc_v_min<=flags['secondary_voltage_pu']<=lab.oltc_v_max
+        assert len(flags['history'])<=9
+        assert all(b['tap']-a['tap']==direction for a,b in zip(flags['history'],flags['history'][1:]))
+        again,_,held,held_flags=settle_oltc(lab,unloaded,tap)
+        assert held==tap and held_flags['steps']==0
+        assert result.res_bus.loc[0,'vm_pu']==source and not np.isclose(result.res_bus.loc[1,'vm_pu'],source)
+    unloaded.ext_grid.loc[:,'vm_pu']=.9
+    result,_,tap,flags=settle_oltc(lab,unloaded)
+    assert tap==4 and flags['reason']=='tap limit' and flags['at_limit']
+    # A failed trial tap rolls back to its last valid local solution.
+    from unittest.mock import patch
+    from pandapower import LoadflowNotConverged
+    unloaded.ext_grid.loc[:,'vm_pu']=.97
+    original_solve=lab.solve
+    def fail_next_tap(net):
+        if net.trafo.loc[lab.tid,'tap_pos']==1:raise LoadflowNotConverged('trial tap regression')
+        return original_solve(net)
+    with patch.object(lab,'solve',side_effect=fail_next_tap):
+        result,y,tap,flags=settle_oltc(lab,unloaded)
+    assert tap==0 and flags['reason']=='next tap power-flow failure' and np.isfinite(y).all()
+    print('Bus-1-only relay, no downstream feedback, direction, deadband memory, bounds and trial-tap rollback: PASS')
     # Match the displayed MLP prediction to these applied commands and this AC solve.
     estimates=second['voltage_estimates']
     assert estimates['Bus'].tolist()==c.bus_ids
@@ -62,9 +105,9 @@ def check_live(lab=None):
     assert 'Full MPC cost function' in html and '0.95' in html and '1.05' in html
     old_seed=session.base['seed'];old_id=session.scenario_id
     from dashboard import new_scenario
-    try:new_scenario(6,1,1,.1,1000,session)
-    except Exception:pass
-    else:raise AssertionError('Invalid scalers should fail without replacing the visible scenario')
+    invalid=new_scenario(6,1,1,.1,1000,session)
+    assert invalid[0] is session and all(x=={'__type__':'update'} for x in invalid[1:5])
+    assert 'data-error="true"' in invalid[5]
     assert session.base['seed']==old_seed and session.scenario_id==old_id
     # Upper endpoints are real profile multipliers, with finite AC results when feasible.
     session.base=lab.generate_scenario(0)
@@ -82,10 +125,9 @@ def check_live(lab=None):
     from dashboard import update_configuration
     session.base=lab.generate_scenario(6)
     previous_frame=session.last
-    try:update_configuration(5,0,1,.1,1000,session)
-    except Exception as exc:
-        assert 'Power flow did not converge' in str(exc) and 'previous result is retained' in str(exc)
-    else:raise AssertionError('Expected the extreme AC case to fail explicitly')
+    failed=update_configuration(5,0,1,.1,1000,session)
+    assert failed[0] is session and all(x=={'__type__':'update'} for x in failed[1:5])
+    assert 'Power flow failed' in failed[5] and 'Previous result kept' in failed[5]
     assert session.last is previous_frame
     for lf,pf in [(float('nan'),1),(1,float('inf')),(1,-.1),(5.1,1),(1,5.1)]:
         try:session.sample(lf,pf)
@@ -131,13 +173,13 @@ def check_live(lab=None):
         assert np.allclose(actual_q, expected_q, atol=6e-6)
     assert np.mean(after) < .6*np.mean(before), (before, after)
     assert np.mean(saturation) < .5, saturation
-    print('Native ADG six-case AC violations (uncontrolled / best OLTC / MPC):', list(zip(before, taps, after)))
+    print('Native ADG six-case AC violations (uncontrolled / local OLTC / MPC):', list(zip(before, taps, after)))
     print('Mean saturated command fraction:', float(np.mean(saturation)))
     previous = session.base['seed']; session.new_scenario()
     assert session.base['seed'] != previous
     f = session.sample(1, 1)
     plot = comparison_plot(f, lab).to_plotly_json()
-    assert [t['name'] for t in plot['data'][:3]] == ['Uncontrolled', 'Best OLTC', 'MLP + MPC']
+    assert [t['name'] for t in plot['data'][:3]] == ['Uncontrolled', 'OLTC', 'MLP + MPC']
     assert plot['data'][0]['y'].count(None) == 2
     maps=[t for t in plot['data'] if t.get('mode')=='markers+text']
     assert len(maps)==3
@@ -154,7 +196,7 @@ def check_live(lab=None):
             if row[0]=='':continue
             b=int(row[0])
             assert np.allclose(row[1:],[f[key].res_bus.loc[b,'vm_pu'] for key in ['baseline','oltc','mpc']])
-        assert all(name in trace['hovertemplate'] for name in ['Uncontrolled:','Best OLTC:','MLP + MPC:'])
+        assert all(name in trace['hovertemplate'] for name in ['Uncontrolled:','OLTC:','MLP + MPC:'])
     # All cases share the source voltage: hovering this coincident point must retain every value.
     assert plot['data'][0]['customdata'][0]==['0',1.,1.,1.]
     print('Every voltage tooltip includes all three bus-aligned AC results, including coincident curves: PASS')
@@ -166,7 +208,7 @@ def check_server(lab):
     from urllib.request import build_opener, ProxyHandler
     from gradio_client import Client
     from dashboard import build_dashboard, launch_dashboard
-    app = build_dashboard(lab)
+    app = build_dashboard(lab,scenario_seed=0)
     try:
         url, credentials = launch_dashboard(app, share=False)
         assert credentials is None and app.auth is None
@@ -177,15 +219,19 @@ def check_server(lab):
         scaled = client.predict(2, 1, 1, .1, 1000, api_name='/react')
         higher = client.predict(.5, 5, 1, .1, 1000, api_name='/react')
         assert higher[2]==scaled[2] and higher[0]!=scaled[0]
+        failed = client.predict(5,0,1,.1,1000,api_name='/react')
+        assert 'Power flow failed' in failed[4] and 'data-error="true"' in failed[4]
+        recovered = client.predict(1,1,1,.1,1000,api_name='/react')
+        assert recovered[2]==higher[2] and 'data-error="false"' in recovered[4]
         new = client.predict(2, 1, 1, .1, 1000, api_name='/new_scenario')
         assert initial[2] == scaled[2] and initial[0] != scaled[0]
-        assert len(initial)==4 and initial[1].count('<tr data-bus=')==18
+        assert len(initial)==5 and initial[1].count('<tr data-bus=')==18
         assert new[2] != scaled[2]
         assert 'Synthetic daily profile' in new[2] and 'OLTC tap position:' in new[3]
         assert 'MLP estimate vs actual' in new[1] and 'Full MPC cost function' in new[1]
         assert 'ΔP (kW)' in new[1] and 'ΔQ (kVar)' in new[1]
         plot = json.loads(initial[0]['plot'])
-        assert [t['name'] for t in plot['data'][:3]] == ['Uncontrolled', 'Best OLTC', 'MLP + MPC']
+        assert [t['name'] for t in plot['data'][:3]] == ['Uncontrolled', 'OLTC', 'MLP + MPC']
         types = [c['type'] for c in app.config['components']]
         assert types.count('button') == 1 and types.count('plot') == 1
         assert not {'dropdown', 'tabs', 'tabitem', 'timer', 'radio', 'checkbox'} & set(types)
@@ -194,6 +240,7 @@ def check_server(lab):
         assert app.config['title'] == 'Voltage control for ADG'
         gains=[c['props'] for c in app.config['components'] if c['type']=='number']
         assert [g['info'] for g in gains]==['Higher: use less ΔP','Higher: use less ΔQ','Higher: stronger voltage correction']
+        print('Recoverable power-flow error response and next-request recovery: PASS')
         print('No-login Gradio, extended 5x slider ranges, new synthetic scenarios and three overlaid controls: PASS')
         if os.getenv('GRID_LAB_BROWSER_CHECK') == '1':
             from check_browser import check_browser
