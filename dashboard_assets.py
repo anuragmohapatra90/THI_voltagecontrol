@@ -15,7 +15,7 @@ html,body {margin:0;height:100%;overflow:hidden}
  background:#f6f8fa!important;border:1px solid #d8e1e8;border-radius:10px;padding:8px;box-sizing:border-box}
 #controls h3 {font-size:14px;margin:0;color:#172b3a!important}
 #controls,#controls label,#controls label span,#controls .prose,#controls .prose p,#controls .info,
-#controls .block,#controls input,#controls span,#controls p,#controls [data-testid="block-info"] {color:#172b3a!important}
+#controls .block,#controls input,#controls span,#controls p,#controls .info-text,#controls [data-testid="block-info"] {color:#172b3a!important}
 #controls .prose p {margin:0;font-size:12px}
 #controls label,#controls label span {background:transparent!important}
 #controls .form {background:transparent!important}
@@ -40,7 +40,8 @@ html,body {margin:0;height:100%;overflow:hidden}
 #gain-row {gap:5px;flex-wrap:nowrap!important}
 #gain-row > div {min-width:0!important}
 #gain-row label,#gain-row label span {font-size:11px!important;background:transparent!important}
-#gain-row .info,#gain-row [data-testid="block-info"] {font-size:10px!important;line-height:13px!important}
+#gain-row .info,#gain-row .info-text,#gain-row [data-testid="block-info"] {font-size:10px!important;line-height:13px!important}
+#gain-row .info-text {margin-bottom:2px!important}
 #diagnostics-panel {flex:0 0 340px!important;min-width:340px!important;max-width:340px!important;min-height:0!important;
  gap:0!important;padding:0!important;border:1px solid #d8e1e8;border-radius:9px;background:#fff!important;box-sizing:border-box}
 #diagnostics {flex:1!important;min-height:0!important;padding:8px!important;border:0!important;background:#fff!important}
@@ -48,7 +49,7 @@ html,body {margin:0;height:100%;overflow:hidden}
  background:#fff;font-size:11px;font-family:Arial,sans-serif;font-variant-numeric:tabular-nums}
 .diagnostic-layout h3 {font-size:12px;line-height:17px;margin:0!important;color:#172b3a!important}
 .diagnostic-note {color:#405a6b!important;font-size:10px;line-height:13px}
-.diagnostic-layout table {width:100%;border-collapse:collapse;table-layout:fixed;color:#172b3a;background:#fff}
+.diagnostic-layout table {width:100%;border-collapse:collapse;table-layout:fixed;color:#172b3a;background:#fff;margin:0!important}
 .diagnostic-layout th,.diagnostic-layout td {text-align:right;white-space:nowrap;padding:0 4px;border-bottom:1px solid #e3eaf0;
  box-sizing:border-box;color:#172b3a!important}
 .diagnostic-layout th:first-child {width:33px;text-align:center}
@@ -66,6 +67,15 @@ html,body {margin:0;height:100%;overflow:hidden}
 .cost-function sub {font-size:8px;line-height:0}
 .equation-indent {padding-left:13px}
 @media(min-height:760px) {.voltage-table td,.voltage-table tbody th {height:19px;line-height:17px;font-size:11.5px}}
+@media(max-height:740px) {
+ #controls {gap:3px;padding:7px}
+ #controls label,#controls label span {font-size:12px!important;line-height:16px!important}
+ #controls .prose p {font-size:11px;line-height:15px}
+ .voltage-table td,.voltage-table tbody th {height:15px;line-height:13px;font-size:10px}
+ .diagnostic-layout thead th {height:18px}
+ .cost-function {font-size:10px;line-height:13px}
+ .cost-function h3 {line-height:15px}
+}
 footer {display:none!important}
 '''
 

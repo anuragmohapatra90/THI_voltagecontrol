@@ -99,7 +99,7 @@ def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
                     'width':[3 if b in limited else .7 for b in buses]}},showlegend=False),row=2,col=column)
     fig.update_xaxes(visible=False,row=2,col=column)
     levels=[p[1] for p in positions.values()]
-    fig.update_yaxes(visible=False,range=[min(levels)-1.5,max(levels)+.8],row=2,col=column)
+    fig.update_yaxes(visible=False,range=[min(levels)-3,max(levels)+.8],row=2,col=column)
 
 
 def comparison_plot(frame,lab):

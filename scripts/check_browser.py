@@ -14,7 +14,7 @@ def check_contrast(page, mode):
         const rgb=s=>(s.match(/[\\d.]+/g)||[]).map(Number);
         const lum=c=>c.slice(0,3).map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4)
             .reduce((s,v,i)=>s+v*[.2126,.7152,.0722][i],0);
-        const selected=document.querySelectorAll('#controls input:not([type="range"]),#controls label,#controls .info,#new-scenario');
+        const selected=document.querySelectorAll('#controls input:not([type="range"]),#controls label,#controls .info,#controls .info-text,#new-scenario');
         return [...selected].filter(e=>e.getBoundingClientRect().height>0).map(e=>{
             const style=getComputedStyle(e);const fg=rgb(style.color);
             let p=e,bg=[255,255,255,1];
@@ -85,6 +85,7 @@ def check_browser(url):
                         });
                     })};
             }''')
+            screenshot_log(page) if height == 650 else None
             assert result['scroll'] <= height+1 and result['body'] <= height+1, result
             assert result['right'] and result['inputsFit'], result
             assert max(result['controlsBottom'],result['graphBottom'],result['diagnosticsBottom']) <= height+1, result
