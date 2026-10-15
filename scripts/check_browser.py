@@ -68,7 +68,7 @@ def check_browser(url):
         check_contrast(page, 'light mode')
         screenshot_log(page)
         # First customer bus on feeder A: hover its actual map marker, including both injections.
-        point=page.locator('#comparison .scatterlayer .trace').nth(4).locator('path.point').nth(2)
+        point=page.locator('#comparison .subplot.x2y2 path.point').nth(2)
         point.hover(force=True)
         page.wait_for_function('''() => {
             const text=document.querySelector('#comparison .hoverlayer')?.textContent||'';
