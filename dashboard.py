@@ -215,8 +215,6 @@ def status_markdown(frame,lab,mode='local'):
             'no predicted improvement':'Holding · no estimated gain'}.get(flags['reason'],'Tap failed · rolled back')
         return (f'**OLTC tap position: {frame["informed_tap_pos"]:+d}** · {rating}  \n'
             f'{reason} · MPC {safe}')
-    return (f'**OLTC tap position: {frame["informed_tap_pos"]:+d}** · ±5%  \n'
-            f'MLP: {flags["reason"]}{limit} · MPC {safe}')
     return (f'**OLTC tap position: {frame["tap_pos"]:+d}** · ±5%  \n'
         f'V₁ {frame["oltc_flags"]["secondary_voltage_pu"]:.4f} pu · MPC {safe}')
 
