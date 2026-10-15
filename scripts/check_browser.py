@@ -124,7 +124,12 @@ def check_browser(url):
                         controlsBottom:controls.bottom,graphBottom:graph.bottom,diagnosticsBottom:diagnostics.bottom,
                         right:graph.x>=controls.right && diagnostics.x>=graph.right,
                         inputsFit:inputs.every(e=>e.getBoundingClientRect().bottom<=innerHeight),
-                    feedbackFit:document.getElementById('scenario-feedback').getBoundingClientRect().bottom<=innerHeight,
+                        feedbackFit:(()=>{
+                            const message=document.getElementById('scenario-feedback').getBoundingClientRect();
+                            const host=document.getElementById('feedback-host').getBoundingClientRect();
+                            return message.height>=40 && host.height>=40 && message.top>=host.top
+                                && message.bottom<=host.bottom+1 && host.bottom<=innerHeight;
+                        })(),
                         svgHeight:gd._fullLayout.height,hostHeight:graph.height,
                         lastBusVisible:last.bottom<=viewport.bottom+1,
                         costVisible:document.querySelector('.cost-function').getBoundingClientRect().bottom<=innerHeight,
@@ -159,6 +164,7 @@ def check_browser(url):
         page.locator('#load-scale input[type="range"]').press('End')
         wait_for_ui(page,"() => document.getElementById('scenario-feedback').dataset.error==='true'",timeout=30000)
         assert 'Power flow failed' in page.locator('#scenario-feedback').inner_text()
+        assert page.locator('#feedback-host').bounding_box()['height']>=40
         assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id')==previous
         assert page.locator('.voltage-table').inner_text()==previous_rows
         assert page.evaluate("document.querySelector('#comparison-mlp .js-plotly-plot').layout.meta.load_factor") == 1
