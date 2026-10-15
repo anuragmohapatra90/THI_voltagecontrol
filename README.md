@@ -2,7 +2,7 @@
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/anuragmohapatra90/THI_voltagecontrol/blob/main/Grid_Control_Lab.ipynb)
 
-The grid, household loading, PV generation and three DER control sites come from [ADG_datadriven](https://github.com/anuragmohapatra90/ADG_datadriven). A Gradio dashboard compares **Uncontrolled**, **Best OLTC** and **MLP + MPC** together.
+The grid, household loading, PV generation and three DER control sites come from [ADG_datadriven](https://github.com/anuragmohapatra90/ADG_datadriven). A Gradio dashboard compares **Uncontrolled**, **OLTC** and **MLP + MPC** together.
 
 ## Run
 
@@ -24,7 +24,9 @@ The original 15-bus, two-feeder grid uses a 0.4 MVA 20/0.4 kV transformer and NA
 
 The original reference files for grid construction, profile generation, configuration and MLP architecture are copied byte-for-byte. One seeded realization of the reference's random line lengths is shared by model training and the dashboard. The MLP is retrained for that exact plant. The larger dashboard scaling range does not change the reference training campaign; high-scale cases can extrapolate beyond its training data. A non-convergent power flow reports an error and retains the previous result. Its 64/32 ReLU architecture, Adam/MSE training and SLSQP voltage/action objective are preserved.
 
-The transformer gains an explicit OLTC retrofit. The OLTC comparison checks nine taps (−4…+4 at 1.25%), a **±5% secondary-reference range**, at the same P/Q snapshot. Positive taps raise voltage. It is an ideal best-tap benchmark using actual AC results; MPC uses MLP estimates and also penalizes control effort, so their objectives differ. All curves and maps show the resulting AC power-flow voltages. See [MODEL.md](MODEL.md) for source provenance and assumptions.
+The transformer gains a local OLTC relay with nine taps (−4…+4 at 1.25%), a **±5% secondary-reference range**. Positive taps raise voltage. It measures **only LV bus 1**, holds its previous tap, and steps until the local voltage reaches the experiment's **0.99–1.01 pu deadband** or a tap limit. Bus 0 is the MV slack; bus 1 already varies with load and tap, so no extra bus/line is required. The sidebar shows the measured secondary voltage.
+
+The display is a settled snapshot, without real tap delay/motor timing. The OLTC has no household or feeder-end voltage feedback. A safe secondary voltage can coexist with an unsafe feeder end; the OLTC then holds while MPC can act at its three DER sites. MPC uses MLP estimates and effort penalties, so it also has estimation/capability limits. All displayed voltages are actual AC results. The old all-bus best-tap search is retained only for offline checks. See [MODEL.md](MODEL.md) for source guidance and assumptions.
 
 ## Development
 
@@ -36,4 +38,4 @@ python -m pip install -r requirements.txt nbformat==5.10.4
 python scripts/validate_project.py
 ```
 
-CI checks upstream file identity, reference-grid AC parity, the original scenario/scaler behavior, controller signs and limits, exhaustive tap selection and the login-free browser dashboard on Python 3.12 and 3.13.
+CI checks upstream file identity, reference-grid AC parity, the original scenario/scaler behavior, controller signs and limits, local relay feedback, tap range and rollback, offline exhaustive-tap checks and the login-free browser dashboard on Python 3.12 and 3.13.

@@ -59,7 +59,7 @@ def check_browser(url):
         point.hover(force=True)
         page.wait_for_function('''() => {
             const text=document.querySelector('#comparison .hoverlayer')?.textContent||'';
-            return text.includes('Bus 0') && ['Uncontrolled: 1.00000 pu','Best OLTC: 1.00000 pu','MLP + MPC: 1.00000 pu']
+            return text.includes('Bus 0') && ['Uncontrolled: 1.00000 pu','OLTC: 1.00000 pu','MLP + MPC: 1.00000 pu']
                 .every(value=>text.includes(value));
         }''')
         print('Chromium real pointer hover: all three AC values visible at a coincident bus: PASS')
@@ -123,12 +123,21 @@ def check_browser(url):
         assert page.evaluate("document.querySelector('#comparison .js-plotly-plot').layout.meta.load_factor") == 1
         with page.expect_request('**/queue/join**',timeout=10000):
             page.get_by_role('button',name='Load new scenario',exact=True).click()
-        page.wait_for_function('''() => {
-            const button=document.getElementById('new-scenario'),feedback=document.getElementById('scenario-feedback');
-            return feedback.dataset.error==='true' && feedback.textContent.includes('Power flow failed')
-                && !button.disabled && !button.dataset.busy && !document.getElementById('controls').inert
-                && document.getElementById('comparison').getAttribute('aria-busy')==='false';
-        }''',timeout=30000)
+        try:
+            page.wait_for_function('''() => {
+                const button=document.getElementById('new-scenario'),feedback=document.getElementById('scenario-feedback');
+                return feedback.dataset.error==='true' && feedback.textContent.includes('Power flow failed')
+                    && !button.disabled && !button.dataset.busy && !document.getElementById('controls').inert
+                    && document.getElementById('comparison').getAttribute('aria-busy')==='false';
+            }''',timeout=30000)
+        except Exception:
+            screenshot_log(page)
+            print('Failure recovery DOM:',page.evaluate('''() => ({
+                button:document.getElementById('new-scenario').outerHTML,
+                feedback:document.getElementById('scenario-feedback').outerHTML,
+                inert:document.getElementById('controls').inert,
+                busy:document.getElementById('comparison').getAttribute('aria-busy')})'''))
+            raise
         assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id')==previous
         assert page.locator('.voltage-table').inner_text()==previous_rows
         assert page.evaluate("document.getElementById('scenario-feedback').getBoundingClientRect().bottom<=innerHeight")
@@ -153,7 +162,8 @@ def check_browser(url):
         page.wait_for_function('''() => document.getElementById('new-scenario').disabled
             && document.getElementById('new-scenario').dataset.busy==='true'
             && document.getElementById('comparison').getAttribute('aria-busy')==='true'
-            && document.getElementById('scenario-feedback').innerText.includes('Solving')''', timeout=1000)
+            && document.getElementById('scenario-feedback').dataset.busy==='true'
+            && getComputedStyle(document.getElementById('scenario-feedback'),'::after').content.includes('Solving')''', timeout=1000)
         assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id') == previous
         assert page.locator('#new-scenario').evaluate('''button => {
             const rgb = s => (s.match(/[\\d.]+/g)||[]).map(Number);

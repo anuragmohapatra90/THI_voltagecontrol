@@ -34,6 +34,8 @@ class GridLab:
         self.nv = len(self.bus_ids)
         self.tap0, self.tap_min, self.tap_max = 0, -4, 4
         self.tap_step_percent = 1.25
+        # Local relay setting for this experiment, distinct from the bus safety band.
+        self.oltc_v_min, self.oltc_v_max = .99, 1.01
         # A secondary-reference ratio trim: exactly 0.95–1.05 at ideal no load.
         # Positive taps raise LV voltage; neutral preserves the reference AC solution.
         for key, value in dict(tap_side='lv', tap_neutral=self.tap0, tap_pos=self.tap0, tap_min=self.tap_min,
