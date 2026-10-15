@@ -1,6 +1,7 @@
 """ADG's sidebar/profile/actions/heatmap layout, comparing all three controls."""
 from dataclasses import dataclass,field
 from copy import deepcopy,copy
+from html import escape
 import numpy as np
 import networkx as nx
 import plotly.graph_objects as go
@@ -150,39 +151,57 @@ def comparison_plot(frame,lab):
         legend={'orientation':'h','x':0,'y':1,'yref':'container','yanchor':'top','itemclick':False,'itemdoubleclick':False,'font':{'size':10}},
         coloraxis={'colorscale':'RdBu','cmin':.90,'cmax':1.10,
             'colorbar':{'title':'V (pu)','orientation':'h','x':.5,'y':-.04,'len':.5,'thickness':10}},
-        hovermode='closest',uirevision='grid-comparison',meta={'scenario_id':frame['scenario_id']})
+        hovermode='closest',uirevision='grid-comparison',meta={'scenario_id':frame['scenario_id'],'scenario_seed':frame['scenario_seed'],
+            'load_factor':frame['load_factor'],'pv_factor':frame['pv_factor']})
     fig.update_annotations(font_size=11)
     return fig
 
 
-def update_configuration(lf,pf,wp,wq,wv,session):
+def feedback_html(message='Ready', *, error=False):
+    flag='true' if error else 'false'
+    role='alert' if error else 'status'
+    return f'<div id="scenario-feedback" data-error="{flag}" role="{role}" aria-live="polite">{escape(message)}</div>'
+
+
+def _failed_snapshot(session,message):
+    # A recoverable solve error is a completed UI response, with no partial results.
+    return session,gr.skip(),gr.skip(),gr.skip(),gr.skip(),feedback_html(message,error=True)
+
+
+def _evaluate_configuration(lf,pf,wp,wq,wv,session,*,resample=False):
+    # RNG advances on a failed draw; displayed scenario and results commit only on success.
+    candidate=copy(session)
     try:
-        frame=session.sample(lf,pf,(wp,wq,wv))
+        if resample:candidate.new_scenario()
+        frame=candidate.sample(lf,pf,(wp,wq,wv))
         minutes=int(frame['hour']*60)
         caption=f"**Scenario {frame['scenario_id']} · {minutes//60:02d}:{minutes%60:02d}**  \nSynthetic daily profile"
-        safe='within limits' if voltage_violation(session.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
-        status=f'**OLTC tap position: {frame["tap_pos"]:+d}**  \nMLP + MPC voltage: {safe}'
-        return session,comparison_plot(frame,session.lab),diagnostics_html(frame,session.lab),caption,status
-    except LoadflowNotConverged as exc:
-        raise gr.Error(f'Power flow did not converge at load ×{float(lf):g}, PV ×{float(pf):g}. '
-            'The previous result is retained. Reduce a scale or load another scenario.') from exc
-    except Exception as exc:raise gr.Error(str(exc)) from exc
+        safe='within limits' if voltage_violation(candidate.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
+        status=f'**OLTC tap position: {frame["tap_pos"]:+d}** · ±5%  \nMLP + MPC voltage: {safe}'
+        plot=comparison_plot(frame,candidate.lab)
+        diagnostics=diagnostics_html(frame,candidate.lab)
+        return candidate,plot,diagnostics,caption,status,feedback_html()
+    except LoadflowNotConverged:
+        return _failed_snapshot(session,f'Power flow failed (load ×{float(lf):g}, PV ×{float(pf):g}). '
+            'Previous result kept. Reduce scales or load another scenario.')
+    except Exception as exc:
+        return _failed_snapshot(session,f'Simulation failed: {exc}. Previous result kept.')
+
+
+def update_configuration(lf,pf,wp,wq,wv,session):
+    return _evaluate_configuration(lf,pf,wp,wq,wv,session)
 
 
 def new_scenario(lf,pf,wp,wq,wv,session):
-    # Keep the displayed snapshot atomic, while a failed attempt still advances the RNG.
-    candidate=copy(session)
-    candidate.new_scenario()
-    return update_configuration(lf,pf,wp,wq,wv,candidate)
+    return _evaluate_configuration(lf,pf,wp,wq,wv,session,resample=True)
 
 
-
-def build_dashboard(lab=None):
+def build_dashboard(lab=None, *, scenario_seed=None):
     seed=lab or GridLab()
     if getattr(seed,'voltage_controller',None) is None:
         print('Preparing ADG MLP + MPC controller…',flush=True);prepare_controller(seed);print('MLP ready.',flush=True)
     with gr.Blocks(title='Voltage control for ADG',analytics_enabled=False,fill_height=True) as app:
-        state=gr.State(value=lambda:ScenarioExperiment(deepcopy(seed)))
+        state=gr.State(value=lambda:ScenarioExperiment(deepcopy(seed),rng=np.random.default_rng(scenario_seed)))
         gr.Markdown('# Voltage control for ADG',elem_id='title')
         with gr.Row(elem_id='workspace'):
             with gr.Column(elem_id='controls'):
@@ -190,19 +209,19 @@ def build_dashboard(lab=None):
                 load=gr.Button('Load new scenario',variant='primary',elem_id='new-scenario')
                 timestamp=gr.Markdown('')
                 gr.Markdown('### 2. Operational Adjustments')
-                lf=gr.Slider(.5,MAX_SCENARIO_SCALE,value=1.,step=.05,label='Load Scaling Factor')
-                pf=gr.Slider(0.,MAX_SCENARIO_SCALE,value=1.,step=.05,label='PV Generation Factor')
+                lf=gr.Slider(.5,MAX_SCENARIO_SCALE,value=1.,step=.05,label='Load Scaling Factor',elem_id='load-scale')
+                pf=gr.Slider(0.,MAX_SCENARIO_SCALE,value=1.,step=.05,label='PV Generation Factor',elem_id='pv-scale')
                 gr.Markdown('### MPC Gains')
                 with gr.Row(elem_id='gain-row'):
                     wp=gr.Number(1.,minimum=0,label='kP · ΔP cost',info='Higher: use less ΔP',step=.1,min_width=65,elem_id='gain-p')
                     wq=gr.Number(.1,minimum=0,label='kQ · ΔQ cost',info='Higher: use less ΔQ',step=.1,min_width=65,elem_id='gain-q')
                     wv=gr.Number(1000.,minimum=0,label='kV · voltage',info='Higher: stronger voltage correction',step=100.,min_width=65,elem_id='gain-v')
                 status=gr.Markdown('')
-                gr.HTML('<div id="scenario-feedback" role="status" aria-live="polite">Ready</div>')
+                feedback=gr.HTML(feedback_html(),elem_id='feedback-host')
             graph=gr.Plot(show_label=False,elem_id='comparison')
             with gr.Column(elem_id='diagnostics-panel'):
                 diagnostics=gr.HTML('',elem_id='diagnostics')
-        inputs=[lf,pf,wp,wq,wv,state];outputs=[state,graph,diagnostics,timestamp,status]
+        inputs=[lf,pf,wp,wq,wv,state];outputs=[state,graph,diagnostics,timestamp,status,feedback]
         common={'concurrency_limit':1,'concurrency_id':'scenario_grid','show_progress':'hidden'}
         gr.on([lf.input,pf.input,wp.change,wq.change,wv.change],update_configuration,inputs,outputs,
             api_name='react',trigger_mode='always_last',**common)

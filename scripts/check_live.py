@@ -62,9 +62,9 @@ def check_live(lab=None):
     assert 'Full MPC cost function' in html and '0.95' in html and '1.05' in html
     old_seed=session.base['seed'];old_id=session.scenario_id
     from dashboard import new_scenario
-    try:new_scenario(6,1,1,.1,1000,session)
-    except Exception:pass
-    else:raise AssertionError('Invalid scalers should fail without replacing the visible scenario')
+    invalid=new_scenario(6,1,1,.1,1000,session)
+    assert invalid[0] is session and all(x=={'__type__':'update'} for x in invalid[1:5])
+    assert 'data-error="true"' in invalid[5]
     assert session.base['seed']==old_seed and session.scenario_id==old_id
     # Upper endpoints are real profile multipliers, with finite AC results when feasible.
     session.base=lab.generate_scenario(0)
@@ -82,10 +82,9 @@ def check_live(lab=None):
     from dashboard import update_configuration
     session.base=lab.generate_scenario(6)
     previous_frame=session.last
-    try:update_configuration(5,0,1,.1,1000,session)
-    except Exception as exc:
-        assert 'Power flow did not converge' in str(exc) and 'previous result is retained' in str(exc)
-    else:raise AssertionError('Expected the extreme AC case to fail explicitly')
+    failed=update_configuration(5,0,1,.1,1000,session)
+    assert failed[0] is session and all(x=={'__type__':'update'} for x in failed[1:5])
+    assert 'Power flow failed' in failed[5] and 'Previous result kept' in failed[5]
     assert session.last is previous_frame
     for lf,pf in [(float('nan'),1),(1,float('inf')),(1,-.1),(5.1,1),(1,5.1)]:
         try:session.sample(lf,pf)
@@ -166,7 +165,7 @@ def check_server(lab):
     from urllib.request import build_opener, ProxyHandler
     from gradio_client import Client
     from dashboard import build_dashboard, launch_dashboard
-    app = build_dashboard(lab)
+    app = build_dashboard(lab,scenario_seed=0)
     try:
         url, credentials = launch_dashboard(app, share=False)
         assert credentials is None and app.auth is None
@@ -177,9 +176,13 @@ def check_server(lab):
         scaled = client.predict(2, 1, 1, .1, 1000, api_name='/react')
         higher = client.predict(.5, 5, 1, .1, 1000, api_name='/react')
         assert higher[2]==scaled[2] and higher[0]!=scaled[0]
+        failed = client.predict(5,0,1,.1,1000,api_name='/react')
+        assert 'Power flow failed' in failed[4] and 'data-error="true"' in failed[4]
+        recovered = client.predict(1,1,1,.1,1000,api_name='/react')
+        assert recovered[2]==higher[2] and 'data-error="false"' in recovered[4]
         new = client.predict(2, 1, 1, .1, 1000, api_name='/new_scenario')
         assert initial[2] == scaled[2] and initial[0] != scaled[0]
-        assert len(initial)==4 and initial[1].count('<tr data-bus=')==18
+        assert len(initial)==5 and initial[1].count('<tr data-bus=')==18
         assert new[2] != scaled[2]
         assert 'Synthetic daily profile' in new[2] and 'OLTC tap position:' in new[3]
         assert 'MLP estimate vs actual' in new[1] and 'Full MPC cost function' in new[1]
@@ -194,6 +197,7 @@ def check_server(lab):
         assert app.config['title'] == 'Voltage control for ADG'
         gains=[c['props'] for c in app.config['components'] if c['type']=='number']
         assert [g['info'] for g in gains]==['Higher: use less ΔP','Higher: use less ΔQ','Higher: stronger voltage correction']
+        print('Recoverable power-flow error response and next-request recovery: PASS')
         print('No-login Gradio, extended 5x slider ranges, new synthetic scenarios and three overlaid controls: PASS')
         if os.getenv('GRID_LAB_BROWSER_CHECK') == '1':
             from check_browser import check_browser

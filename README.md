@@ -14,7 +14,7 @@ Setup stays on the left. The center overlays the three physical voltage curves a
 
 The right-hand diagnostics show **ΔP/ΔQ relative to uncontrolled**, with **MAX** badges when either signed ±50 kW/kVar limit is reached. Underneath are the MLP estimate, actual controlled AC voltage and signed error (estimate − actual) for every bus, followed by the complete MPC cost function and bounds. The scenario time is a synthetic time of day.
 
-**Load new scenario** immediately shows a loading label and spinner, disables duplicate clicks and marks the previous plot as pending. Results and diagnostics update together. Sidebar labels and values stay readable in light or dark browser themes. Gain hints explain the penalty direction: increasing kP/kQ discourages the corresponding power change; increasing kV puts more weight on voltage correction.
+**Load new scenario** immediately shows a loading label and spinner, disables duplicate clicks and marks the previous plot as pending. Results and diagnostics update together. A failed power flow leaves the last valid scenario visible, shows a persistent error and releases the controls so another setting or scenario can be tried. Sidebar labels and values stay readable in light or dark browser themes. Gain hints explain the penalty direction: increasing kP/kQ discourages the corresponding power change; increasing kV puts more weight on voltage correction.
 
 After merging a PR, reopen the same GitHub-linked Colab URL, restart the runtime and Run all. No notebook uploads are needed. This repository is private, so the checkout still needs its read-only GitHub token through the Colab secret `GITHUB_TOKEN` or hidden prompt.
 
@@ -24,7 +24,7 @@ The original 15-bus, two-feeder grid uses a 0.4 MVA 20/0.4 kV transformer and NA
 
 The original reference files for grid construction, profile generation, configuration and MLP architecture are copied byte-for-byte. One seeded realization of the reference's random line lengths is shared by model training and the dashboard. The MLP is retrained for that exact plant. The larger dashboard scaling range does not change the reference training campaign; high-scale cases can extrapolate beyond its training data. A non-convergent power flow reports an error and retains the previous result. Its 64/32 ReLU architecture, Adam/MSE training and SLSQP voltage/action objective are preserved.
 
-The transformer gains an explicit OLTC retrofit. The OLTC comparison checks every permitted tap at the same P/Q snapshot. All curves and maps show the resulting AC power-flow voltages. See [MODEL.md](MODEL.md) for source provenance and assumptions.
+The transformer gains an explicit OLTC retrofit. The OLTC comparison checks nine taps (−4…+4 at 1.25%), a **±5% secondary-reference range**, at the same P/Q snapshot. Positive taps raise voltage. It is an ideal best-tap benchmark using actual AC results; MPC uses MLP estimates and also penalizes control effort, so their objectives differ. All curves and maps show the resulting AC power-flow voltages. See [MODEL.md](MODEL.md) for source provenance and assumptions.
 
 ## Development
 

@@ -14,7 +14,7 @@ def check_contrast(page, mode):
         const rgb=s=>(s.match(/[\\d.]+/g)||[]).map(Number);
         const lum=c=>c.slice(0,3).map(v=>v/255).map(v=>v<=.04045?v/12.92:((v+.055)/1.055)**2.4)
             .reduce((s,v,i)=>s+v*[.2126,.7152,.0722][i],0);
-        const selected=document.querySelectorAll('#controls input:not([type="range"]),#controls label,#controls .info,#controls .info-text,#controls strong,#controls b,.cost-function div,.cost-function sub,#new-scenario');
+        const selected=document.querySelectorAll('#controls input:not([type="range"]),#controls label,#controls .info,#controls .info-text,#controls strong,#controls b,.cost-function div,.cost-function sub,#scenario-feedback,#new-scenario');
         return [...selected].filter(e=>e.getBoundingClientRect().height>0).map(e=>{
             const style=getComputedStyle(e);const fg=rgb(style.color);
             let p=e,bg=[255,255,255,1];
@@ -110,6 +110,39 @@ def check_browser(url):
         page.evaluate("document.documentElement.classList.add('dark');document.body.classList.add('dark')")
         check_contrast(page, 'dark mode')
         screenshot_log(page)
+        # Both deterministic draws fail AC at 5x load / zero PV, not an injected exception.
+        page.locator('#pv-scale input[type="range"]').press('Home')
+        page.wait_for_function("() => document.querySelector('#comparison .js-plotly-plot').layout.meta.pv_factor===0")
+        previous=page.locator('.diagnostic-layout').get_attribute('data-scenario-id')
+        previous_rows=page.locator('.voltage-table').inner_text()
+        page.locator('#load-scale input[type="range"]').press('End')
+        page.wait_for_function("() => document.getElementById('scenario-feedback').dataset.error==='true'",timeout=30000)
+        assert 'Power flow failed' in page.locator('#scenario-feedback').inner_text()
+        assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id')==previous
+        assert page.locator('.voltage-table').inner_text()==previous_rows
+        assert page.evaluate("document.querySelector('#comparison .js-plotly-plot').layout.meta.load_factor") == 1
+        with page.expect_request('**/queue/join**',timeout=10000):
+            page.get_by_role('button',name='Load new scenario',exact=True).click()
+        page.wait_for_function('''() => {
+            const button=document.getElementById('new-scenario'),feedback=document.getElementById('scenario-feedback');
+            return feedback.dataset.error==='true' && feedback.textContent.includes('Power flow failed')
+                && !button.disabled && !button.dataset.busy && !document.getElementById('controls').inert
+                && document.getElementById('comparison').getAttribute('aria-busy')==='false';
+        }''',timeout=30000)
+        assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id')==previous
+        assert page.locator('.voltage-table').inner_text()==previous_rows
+        assert page.evaluate("document.getElementById('scenario-feedback').getBoundingClientRect().bottom<=innerHeight")
+        assert page.evaluate("document.documentElement.scrollHeight<=innerHeight+1")
+        screenshot_log(page)
+        check_contrast(page,'error state in dark mode')
+        # Changing settings after a failed button request must produce a valid fresh response.
+        page.locator('#load-scale input[type="range"]').press('Home')
+        page.wait_for_function('''() => {
+            const gd=document.querySelector('#comparison .js-plotly-plot');
+            return gd.layout.meta.load_factor===.5 && document.getElementById('scenario-feedback').dataset.error==='false';
+        }''',timeout=30000)
+        assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id')==previous
+        print('Chromium real AC failures: slider and new-scenario errors preserve results, unlock controls, and recover on next change: PASS')
         # Hold the actual solver request to prove local feedback appears before any response.
         pattern = '**/queue/join**'
         held = []
