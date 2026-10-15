@@ -55,7 +55,7 @@ def check_browser(url):
             const gd=document.querySelector('#comparison .js-plotly-plot');
             return gd._fullLayout && Math.abs(gd.layout.width-gd.getBoundingClientRect().width)<2;
         }''')
-        point=page.locator('#comparison .scatterlayer .trace').nth(2).locator('path.point').first()
+        point=page.locator('#comparison .scatterlayer .trace').nth(2).locator('path.point').first
         point.hover(force=True)
         page.wait_for_function('''() => {
             const text=document.querySelector('#comparison .hoverlayer')?.textContent||'';
