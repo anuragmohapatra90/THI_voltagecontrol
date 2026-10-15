@@ -89,7 +89,8 @@ def add_heatmap(fig,net,positions,column):
             'color':[d[1] for d in data],'coloraxis':'coloraxis',
             'line':{'color':'#41505a','width':.7}},showlegend=False),row=2,col=column)
     fig.update_xaxes(visible=False,row=2,col=column)
-    fig.update_yaxes(visible=False,row=2,col=column)
+    levels=[p[1] for p in positions.values()]
+    fig.update_yaxes(visible=False,range=[min(levels)-1.5,max(levels)+.6],row=2,col=column)
 
 
 def comparison_plot(frame,lab):
