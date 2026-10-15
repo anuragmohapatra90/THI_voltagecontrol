@@ -17,7 +17,7 @@ The previous tanh/Ridge surrogate, grouped PV-curtailment controls, hard calibra
 
 ## Physical actuation and validation
 
-As in the original ADG experiment, the controller acts through **flexible signed DER P/Q injections**. The default uses each actual SimBench PV bus as a control location. A separate 100 kVA controllable sgen is added there, with ±50 kW/±50 kVar limits. It is zero in uncontrolled and OLTC cases; MPC applies its optimised signed setpoints. It is distinct from the irradiance-driven PV injection. Positive P/Q injects power, negative P/Q absorbs it. The action table reports these signed actions, matching the reference.
+As in the original ADG experiment, the controller acts through **flexible signed DER P/Q injections**. The default keeps four fixed control sites: the interior and end of the longest feeder, plus two other feeder ends (buses 13, 4, 0 and 2 for this grid). This relocates the previous four actuators; it does not increase their number or per-site limits. A separate 100 kVA controllable sgen is added there, with ±50 kW/±50 kVar limits. It is zero in uncontrolled and OLTC cases; MPC applies its optimised signed setpoints. It is distinct from the irradiance-driven PV injection. Positive P/Q injects power, negative P/Q absorbs it. The action table reports these signed actions, matching the reference.
 
 This models flexible DER capacity, including the ability to supply active power when irradiance is low. It is an explicitly added simulation actuator; it is not a claim that an ordinary PV array supplies extra energy at night. No storage energy-state model is included in this snapshot experiment. Existing SimBench load and PV profiles remain identical across the three cases.
 
@@ -31,17 +31,21 @@ The network is `1-LV-rural1--0-sw`, using the original SimBench calendar (2016, 
 
 | Mode | Load P/Q scale | PV scale | Sampling |
 |---|---:|---:|---|
-| High PV | 0.55 | 8.00 | High-generation annual profiles with max LV voltage ≥1.07 pu |
-| High Load | 7.00 | 0.10 | High-demand/low-PV annual profiles with min LV voltage ≤0.93 pu |
+| High PV | 20.00 | 10.00 | High-generation profiles; max LV voltage ≥1.07 pu and a physical feeder voltage valley |
+| High Load | 7.00 | 0.10 | High-demand/low-PV profiles; min LV voltage ≤0.93 pu and substantial branch-to-branch spread |
 | Custom | User-defined | User-defined | All 35,136 timestamps |
 
-High PV starts with the upper 10% of annual total PV P. High Load starts with the upper 10% of total load P and requires PV ≤10% of its annual peak. Up to 256 temporally distributed rows plus 16 injection extremes are AC-screened per pool. Only converged, voltage-stressed rows enter the bucket. Load new scenario stays within that bucket and excludes the current row when alternatives exist. Custom scalers and MPC gains keep the timestamp fixed.
+High PV starts with the upper 10% of annual total PV P. High Load starts with the upper 10% of total load P and requires PV ≤10% of its annual peak. Up to 256 temporally distributed rows plus 16 injection extremes are AC-screened per pool, with up to four random spatial placements per timestamp. Only converged, voltage-stressed layouts enter the bucket. Both presets require an LV voltage spread of at least 0.115 pu and a minimum voltage of at least 0.78 pu, avoiding near-collapse examples. High PV also requires an interior minimum on a real root-to-leaf path: at least 0.003 pu below its start, then at least 0.02 pu recovery toward its end. Screening uses neutral-tap AC voltages only; it never tests MPC performance or chooses scenarios because MPC wins.
 
-Training includes these stress buckets, broader annual profiles with load factors 0.3–8 / PV factors 0–10, and random signed DER actions. No artificial sensor noise is added to targets or displayed voltages.
+Each layout moves the existing SimBench load/PV elements to random feeder positions without changing their element-level P/Q values or PV ratings. Demand is concentrated at an interior site and another branch, with the largest PV element near the far end. High Load instead concentrates demand downstream, retaining its real low-PV profiles; a PV-driven valley is not promised at night. These are deliberately modified stress scenarios, not the original geographical allocation of SimBench customers. The dated profile curves and network line/transformer topology are retained.
+
+Load new scenario chooses another screened timestamp/layout within the preset bucket. Custom draws from the full calendar and generates a fresh random layout. Scalers and MPC gains keep both timestamp and placement fixed. All three cases use exactly the same exogenous injections, connection points and installed controls. The overlaid plot follows actual root-to-leaf paths with gaps between branches and repeated feeder-root labels, rather than joining unrelated buses in table order. Network heatmaps still show every bus.
+
+Training includes these stress buckets, broader annual profiles with load factors 0.3–30 / PV factors 0–10, using the same spatial scenario generator and fixed actuator locations, and random signed DER actions. No artificial sensor noise is added to targets or displayed voltages.
 
 PV factors above one represent added installed PV and inverter capacity. Original PV apparent-power ratings scale with `max(1, PV factor)` and are at least 1.10×nominal PV P. Original PV runs at available/clipped P and Q=0 in all three cases; the separate flexible DER resource supplies the MPC actions.
 
-**Uncontrolled:** neutral tap and zero control-DER actions. **Best OLTC:** exhaustive AC evaluation of every allowed tap at identical PQ, minimizing maximum voltage-limit violation, then nominal-voltage deviation, overall grid-limit violation, and distance from neutral. **MLP + MPC:** neutral tap plus the reference signed-PQ optimiser. The chosen OLTC tap position is displayed explicitly.
+**Uncontrolled:** neutral tap and zero control-DER actions. **Best OLTC:** exhaustive AC evaluation of every allowed tap at identical PQ, minimizing maximum voltage-limit violation, then nominal-voltage deviation, overall grid-limit violation, and distance from neutral. **MLP + MPC:** neutral tap plus the reference signed-PQ optimiser. The chosen OLTC tap position is displayed explicitly. An OLTC changes the transformer ratio for every branch; distributed P/Q controls can reshape a local voltage profile. Neither is guaranteed to win. Curves may coincide when both choose zero action or settle to similar physical voltages. In particular, the reference MPC only penalises voltage outside the band and charges for actuation, whereas the OLTC benchmark also uses nominal-voltage deviation to break ties. It is valid for OLTC to sit closer to 1 pu in easy cases.
 
 The LV transformer requires an explicitly simulated OLTC retrofit: HV-side ratio changer, ±8 taps at 1.25% per tap. The original SimBench network does not declare that capability. The OLTC result is the best settled tap for the snapshot, not a seconds-scale actuator simulation.
 
@@ -49,6 +53,6 @@ Balanced constant-PQ AC power flow is used. No phase imbalance, frequency dynami
 
 ## Checks
 
-CI verifies the reference controller's net-PQ sign mapping, objective derivative, voltage-gain response, independent actuator limits, and **actual AC voltage-violation reduction** across six High PV and six High Load snapshots. It also verifies every stress-bucket row, annual calendar/custom sampling, same-PQ comparison, exhaustive tap selection, Git refresh/launcher behavior, and login-free Gradio event transport.
+CI verifies the reference controller's net-PQ sign mapping, objective derivative, voltage-gain response, independent actuator limits, and **actual AC voltage-violation reduction** across six High PV and six High Load snapshots. It also verifies every spatial stress-bucket row and High PV valley, preservation of dated element-level P/Q under relocation, fixed layout during scaler changes, a mean High PV MPC violation below half the exhaustive OLTC benchmark with improvement in at least half of the paired cases, annual calendar/custom sampling, identical comparison layouts, exhaustive tap selection, Git refresh/launcher behavior, and login-free Gradio event transport.
 
 Chromium checks the renamed heading, explicit tap readout, three overlaid traces, reactive dated scenarios, and the fully visible no-scroll desktop layout down to 1280×650. Model/grid settings and metadata remain in Python, not extra frontend tabs.
