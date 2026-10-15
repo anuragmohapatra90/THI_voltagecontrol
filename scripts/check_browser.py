@@ -62,9 +62,21 @@ def check_browser(url):
             return text.includes('Bus 0') && ['Uncontrolled: 1.00000 pu','OLTC: 1.00000 pu','MLP + MPC: 1.00000 pu']
                 .every(value=>text.includes(value));
         }''')
+        assert 'local band' in page.locator('#comparison .hoverlayer').text_content()
+        assert 'OLTC: Holding in local band' in page.locator('#comparison .hoverlayer').text_content()
         print('Chromium real pointer hover: all three AC values visible at a coincident bus: PASS')
         check_contrast(page, 'light mode')
         screenshot_log(page)
+        # First customer bus on feeder A: hover its actual map marker, including both injections.
+        point=page.locator('#comparison .subplot.x2y2 path.point').nth(2)
+        point.hover(force=True)
+        page.wait_for_function('''() => {
+            const text=document.querySelector('#comparison .hoverlayer')?.textContent||'';
+            return text.includes('Bus 2') && text.includes('Load + PV') && text.includes('Gross load P')
+                && text.includes('Load Q') && text.includes('PV P') && text.includes('Base net P');
+        }''')
+        screenshot_log(page)
+        print('Chromium feeder-head hover: both gross load and PV are visible at the mixed site: PASS')
         page.mouse.move(5,5)
         for width, height in [(1440,900), (1366,768), (1280,720), (1280,650)]:
             page.set_viewport_size({'width':width, 'height':height})

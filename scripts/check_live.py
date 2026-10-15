@@ -40,6 +40,20 @@ def check_live(lab=None):
     for tap in range(lab.tap_min, lab.tap_max+1):
         trial.trafo.loc[lab.tid, 'tap_pos'] = tap
         assert selected <= oltc_score(lab, lab.solve(trial), tap)
+    # Both feeder heads already contain load and PV; scaling moves the local secondary voltage.
+    assert set(lab.net.load.bus)==set(lab.net.sgen.bus)==set(range(2,15))
+    assert 1 not in set(lab.net.load.bus) and 1 not in set(lab.net.sgen.bus)
+    daytime=lab.generate_scenario(0)
+    for b in [2,9]:assert daytime['load_p'][b]>0 and daytime['pv'][b]>0
+    local_voltage=[];local_taps=[]
+    for multiplier in [1,2,3]:
+        n=lab.new_net();lab.set_snapshot(n,lab.generate_scenario(6),multiplier,0);lab.solve(n)
+        local_voltage.append(float(n.res_bus.loc[1,'vm_pu']))
+        _,_,tap,_=settle_oltc(lab,n)
+        local_taps.append(tap)
+    assert all(a>b for a,b in zip(local_voltage,local_voltage[1:])),local_voltage
+    assert local_taps==[0,0,1],(local_voltage,local_taps)
+    print('Mixed feeder-head sites; loading 1/2/3x gives V1/taps:',list(zip(local_voltage,local_taps)))
     # A local relay cannot see the unsafe feeder end if the secondary bus remains in band.
     neutral=lab.new_net();lab.set_snapshot(neutral,lab.generate_scenario(6))
     neutral_y=lab.solve(neutral)
@@ -189,13 +203,19 @@ def check_live(lab=None):
         for b in range(2,15):
             assert symbols[b]==('diamond' if b in config.DER_BUSES else 'triangle-up')
         assert np.allclose([r[4] for r in trace['customdata']], [f['pv_bus_kw'][b] for b in range(15)])
-    assert {t.get('name') for t in plot['data']} >= {'PV site','PV + DER','At limit'}
+        assert np.allclose([r[9] for r in trace['customdata']], [f['load_bus_kw'][b] for b in range(15)])
+        for row in trace['customdata']:
+            assert np.isclose(row[9]-row[4],row[2]),row
+        for b in [2,9]:assert trace['customdata'][b][7]=='Load + PV'
+        assert 'Gross load P' in trace['hovertemplate'] and 'Load Q' in trace['hovertemplate']
+    assert {t.get('name') for t in plot['data']} >= {'Load + PV','Load + PV + DER','At limit'}
     assert {row[0] for row in plot['data'][0]['customdata']} == {str(b) for b in range(15)} | {''}
     for trace in plot['data'][:3]:
         for row in trace['customdata']:
             if row[0]=='':continue
             b=int(row[0])
             assert np.allclose(row[1:],[f[key].res_bus.loc[b,'vm_pu'] for key in ['baseline','oltc','mpc']])
+        assert 'local band' in trace['hovertemplate']
         assert all(name in trace['hovertemplate'] for name in ['Uncontrolled:','OLTC:','MLP + MPC:'])
     # All cases share the source voltage: hovering this coincident point must retain every value.
     assert plot['data'][0]['customdata'][0]==['0',1.,1.,1.]

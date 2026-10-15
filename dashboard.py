@@ -56,6 +56,8 @@ class ScenarioExperiment:
             'load_q_kvar':float(self.base['load_q'].sum()*lf*1000),
             'pv_kw':float(self.base['pv'].sum()*pf*1000),
             'pv_buses':sorted(set(map(int,lab.net.sgen.bus))),
+            'load_buses':sorted(set(map(int,lab.net.load.bus))),
+            'load_bus_kw':{int(b):float(self.base['load_p'][b]*lf*1000) for b in lab.net.bus.index},
             'pv_bus_kw':{int(b):float(self.base['pv'][b]*pf*1000) for b in lab.net.bus.index}}
         self.tap_pos=tap
         return self.last
@@ -85,20 +87,28 @@ def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
     fig.add_trace(go.Scatter(x=xx,y=yy,mode='lines',line={'color':'#9aa4ae','width':1.5},
         hoverinfo='skip',showlegend=False),row=2,col=column)
     lab_bus=1
-    buses=list(net.bus.index);pv_buses=set(frame['pv_buses']);der_buses=set(config.DER_BUSES)
+    buses=list(net.bus.index);pv_buses=set(frame['pv_buses']);der_buses=set(config.DER_BUSES);load_buses=set(frame['load_buses'])
     limited=set(frame['at_limit'].loc[frame['at_limit'][['ΔP','ΔQ']].any(axis=1),'Bus']) if is_mpc else set()
     load=net.load.groupby('bus')[['p_mw','q_mvar']].sum()
     generation=net.sgen.groupby('bus')[['p_mw','q_mvar']].sum()
     data=[]
     for b in buses:
+        if b==lab_bus:
+            site='LV busbar · OLTC sensor'
+        else:
+            installed=[]
+            if b in load_buses:installed.append('Load')
+            if b in pv_buses:installed.append('PV')
+            if b in der_buses:installed.append('control DER')
+            site=' + '.join(installed) or 'Grid supply'
         data.append([int(b),float(net.res_bus.loc[b,'vm_pu']),float(load.p_mw.get(b,0)*1000),
             float(load.q_mvar.get(b,0)*1000),frame['pv_bus_kw'].get(int(b),0.),
             float(generation.p_mw.get(b,0)*1000),float(generation.q_mvar.get(b,0)*1000),
-            'LV busbar · OLTC sensor' if b==lab_bus else ('PV + control DER' if b in der_buses else ('PV site' if b in pv_buses else 'Grid supply')),
-            'LIMIT REACHED' if b in limited else ('OLTC band: 0.99–1.01 pu' if b==lab_bus else '')])
+            site,
+            'LIMIT REACHED' if b in limited else ('OLTC band: 0.99–1.01 pu' if b==lab_bus else ''),frame['load_bus_kw'].get(int(b),0.)])
     fig.add_trace(go.Scatter(x=[positions[int(b)][0] for b in buses],y=[positions[int(b)][1] for b in buses],
         mode='markers+text',text=[str(b) for b in buses],textposition='top center',textfont={'size':8},customdata=data,
-        hovertemplate='Bus %{customdata[0]} · %{customdata[7]}<br>V %{customdata[1]:.5f} pu<br>PV P %{customdata[4]:.2f} kW<br>Base net P %{customdata[2]:.2f} kW<br>Base Q %{customdata[3]:.2f} kVar<br>ΔP %{customdata[5]:.2f} kW · ΔQ %{customdata[6]:.2f} kVar<br>%{customdata[8]}<extra></extra>',
+        hovertemplate='Bus %{customdata[0]} · %{customdata[7]}<br>V %{customdata[1]:.5f} pu<br>Gross load P %{customdata[9]:.2f} kW<br>Load Q %{customdata[3]:.2f} kVar<br>PV P %{customdata[4]:.2f} kW<br>Base net P %{customdata[2]:.2f} kW<br>ΔP %{customdata[5]:.2f} kW · ΔQ %{customdata[6]:.2f} kVar<br>%{customdata[8]}<extra></extra>',
         marker={'symbol':['diamond' if b in der_buses else ('triangle-up' if b in pv_buses else 'circle') for b in buses],
             'size':[11 if b in der_buses else 9 for b in buses],
             'color':[d[1] for d in data],'coloraxis':'coloraxis',
@@ -123,10 +133,20 @@ def comparison_plot(frame,lab):
     shared_voltages=[['',None,None,None] if b is None else
         [str(b),*[float(frame[key].res_bus.loc[b,'vm_pu']) for key in ['baseline','oltc','mpc']]]
         for b in bus]
+    relay=frame['oltc_flags']
+    lo,hi=relay['deadband_pu']
+    if relay['reason']=='deadband':
+        decision='Holding in local band' if relay['steps']==0 else f"Settled after {relay['steps']} tap step(s)"
+    else:
+        decision={'tap limit':'Tap limit reached','deadband crossing':'Holding to avoid tap reversal',
+            'next tap power-flow failure':'Holding last valid tap: next tap failed',
+            'step limit':'Step limit reached'}.get(relay['reason'],relay['reason'])
+    relay_hover=(f'<br>OLTC: {escape(decision)}'
+        f'<br>V₁ {relay["secondary_voltage_pu"]:.4f} pu · local band {lo:.2f}–{hi:.2f} pu')
     voltage_hover=('<b>Bus %{customdata[0]}</b> · actual AC voltage<br>'
         'Uncontrolled: %{customdata[1]:.5f} pu<br>'
         'OLTC: %{customdata[2]:.5f} pu<br>'
-        'MLP + MPC: %{customdata[3]:.5f} pu<extra></extra>')
+        'MLP + MPC: %{customdata[3]:.5f} pu'+relay_hover+'<extra></extra>')
     for key,name,color,symbol,dash in [
         ('baseline','Uncontrolled','#ed9b2d','circle','dash'),
         ('oltc','OLTC','#4574c6','diamond','solid'),
@@ -145,7 +165,7 @@ def comparison_plot(frame,lab):
     positions=grid_positions(frame['baseline'])
     for col,key in enumerate(['baseline','oltc','mpc'],1):
         add_heatmap(fig,frame[key],positions,col,frame,is_mpc=key=='mpc')
-    for name,symbol in [('PV site','triangle-up'),('PV + DER','diamond'),('At limit','diamond')]:
+    for name,symbol in [('Load + PV','triangle-up'),('Load + PV + DER','diamond'),('At limit','diamond')]:
         fig.add_trace(go.Scatter(x=[None],y=[None],mode='markers',name=name,
             marker={'symbol':symbol,'size':9,'color':'#e8f1f6','line':{'color':'#a45100' if name=='At limit' else '#41505a',
             'width':3 if name=='At limit' else 1}},legendgroup='sites',showlegend=True),row=1,col=1)
@@ -180,7 +200,7 @@ def _evaluate_configuration(lf,pf,wp,wq,wv,session,*,resample=False):
         minutes=int(frame['hour']*60)
         caption=f"**Scenario {frame['scenario_id']} · {minutes//60:02d}:{minutes%60:02d}**  \nSynthetic daily profile"
         safe='within limits' if voltage_violation(candidate.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
-        status=f'**OLTC tap position: {frame["tap_pos"]:+d}** · ±5%  \nV₁ {frame["oltc_flags"]["secondary_voltage_pu"]:.3f} pu · MPC {safe}'
+        status=f'**OLTC tap position: {frame["tap_pos"]:+d}** · ±5%  \nV₁ {frame["oltc_flags"]["secondary_voltage_pu"]:.4f} pu · MPC {safe}'
         plot=comparison_plot(frame,candidate.lab)
         diagnostics=diagnostics_html(frame,candidate.lab)
         return candidate,plot,diagnostics,caption,status,feedback_html()
