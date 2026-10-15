@@ -50,8 +50,22 @@ def check_browser(url):
         assert 'Higher: use less ΔQ' in page.locator('#gain-q').inner_text()
         assert 'Higher: stronger voltage correction' in page.locator('#gain-v').inner_text()
         assert 'MLP(P' in page.locator('.cost-function').inner_text()
+        # Real pointer hover over the common slack bus: all three curves coincide at 1 pu.
+        page.wait_for_function('''() => {
+            const gd=document.querySelector('#comparison .js-plotly-plot');
+            return gd._fullLayout && Math.abs(gd.layout.width-gd.getBoundingClientRect().width)<2;
+        }''')
+        point=page.locator('#comparison .scatterlayer .trace').nth(2).locator('path.point').first()
+        point.hover(force=True)
+        page.wait_for_function('''() => {
+            const text=document.querySelector('#comparison .hoverlayer')?.textContent||'';
+            return text.includes('Bus 0') && ['Uncontrolled: 1.00000 pu','Best OLTC: 1.00000 pu','MLP + MPC: 1.00000 pu']
+                .every(value=>text.includes(value));
+        }''')
+        print('Chromium real pointer hover: all three AC values visible at a coincident bus: PASS')
         check_contrast(page, 'light mode')
         screenshot_log(page)
+        page.mouse.move(5,5)
         for width, height in [(1440,900), (1366,768), (1280,720), (1280,650)]:
             page.set_viewport_size({'width':width, 'height':height})
             page.wait_for_function('''() => {
