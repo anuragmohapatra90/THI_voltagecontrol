@@ -62,10 +62,36 @@ def check_live(lab=None):
     assert 'Full MPC cost function' in html and '0.95' in html and '1.05' in html
     old_seed=session.base['seed'];old_id=session.scenario_id
     from dashboard import new_scenario
-    try:new_scenario(3,1,1,.1,1000,session)
+    try:new_scenario(6,1,1,.1,1000,session)
     except Exception:pass
     else:raise AssertionError('Invalid scalers should fail without replacing the visible scenario')
     assert session.base['seed']==old_seed and session.scenario_id==old_id
+    # Upper endpoints are real profile multipliers, with finite AC results when feasible.
+    session.base=lab.generate_scenario(0)
+    for lf,pf in [(5,0),(.5,5),(5,5)]:
+        stressed=session.sample(lf,pf)
+        assert np.isclose(stressed['gross_load_p_kw'],session.base['load_p'].sum()*lf*1000)
+        assert np.isclose(stressed['load_q_kvar'],session.base['load_q'].sum()*lf*1000)
+        assert np.isclose(stressed['pv_kw'],session.base['pv'].sum()*pf*1000)
+        assert np.isfinite(stressed['y_mpc']).all()
+        assert np.abs(stressed['actions'][['ΔP (kW)','ΔQ (kVar)']].to_numpy()).max()<=50.00001
+        for key in ['oltc','mpc']:assert stressed['baseline'].load.equals(stressed[key].load)
+        if (lf,pf)==(5,0):assert min(stressed['y_base'])<.95
+        if (lf,pf)==(.5,5):assert max(stressed['y_base'])>1.05
+    # A physically non-convergent 5x load snapshot keeps the last display and reports why.
+    from dashboard import update_configuration
+    session.base=lab.generate_scenario(6)
+    previous_frame=session.last
+    try:update_configuration(5,0,1,.1,1000,session)
+    except Exception as exc:
+        assert 'Power flow did not converge' in str(exc) and 'previous result is retained' in str(exc)
+    else:raise AssertionError('Expected the extreme AC case to fail explicitly')
+    assert session.last is previous_frame
+    for lf,pf in [(float('nan'),1),(1,float('inf')),(1,-.1),(5.1,1),(1,5.1)]:
+        try:session.sample(lf,pf)
+        except ValueError:pass
+        else:raise AssertionError('Invalid profile multipliers must be rejected')
+    print('5x profile multipliers, fixed DER limits and non-convergent-result retention: PASS')
     # Physical sign and existing-element check, independently of the MLP.
     trial = deepcopy(second['baseline'])
     p0, q0 = net_bus_pq(trial, c.bus_ids)
@@ -122,7 +148,16 @@ def check_live(lab=None):
             assert symbols[b]==('diamond' if b in config.DER_BUSES else 'triangle-up')
         assert np.allclose([r[4] for r in trace['customdata']], [f['pv_bus_kw'][b] for b in range(15)])
     assert {t.get('name') for t in plot['data']} >= {'PV site','PV + DER','At limit'}
-    assert set(plot['data'][0]['customdata']) == {str(b) for b in range(15)} | {''}
+    assert {row[0] for row in plot['data'][0]['customdata']} == {str(b) for b in range(15)} | {''}
+    for trace in plot['data'][:3]:
+        for row in trace['customdata']:
+            if row[0]=='':continue
+            b=int(row[0])
+            assert np.allclose(row[1:],[f[key].res_bus.loc[b,'vm_pu'] for key in ['baseline','oltc','mpc']])
+        assert all(name in trace['hovertemplate'] for name in ['Uncontrolled:','Best OLTC:','MLP + MPC:'])
+    # All cases share the source voltage: hovering this coincident point must retain every value.
+    assert plot['data'][0]['customdata'][0]==['0',1.,1.,1.]
+    print('Every voltage tooltip includes all three bus-aligned AC results, including coincident curves: PASS')
     print('Original ADG configuration, three-DER signs/bounds, reactive PQ, controller and exhaustive tap checks: PASS')
 
 
@@ -140,6 +175,8 @@ def check_server(lab):
         client = Client(url, verbose=False)
         initial = client.predict(1, 1, 1, .1, 1000, api_name='/initial_snapshot')
         scaled = client.predict(2, 1, 1, .1, 1000, api_name='/react')
+        higher = client.predict(.5, 5, 1, .1, 1000, api_name='/react')
+        assert higher[2]==scaled[2] and higher[0]!=scaled[0]
         new = client.predict(2, 1, 1, .1, 1000, api_name='/new_scenario')
         assert initial[2] == scaled[2] and initial[0] != scaled[0]
         assert len(initial)==4 and initial[1].count('<tr data-bus=')==18
@@ -153,11 +190,11 @@ def check_server(lab):
         assert types.count('button') == 1 and types.count('plot') == 1
         assert not {'dropdown', 'tabs', 'tabitem', 'timer', 'radio', 'checkbox'} & set(types)
         sliders = [c['props'] for c in app.config['components'] if c['type'] == 'slider']
-        assert [(c['minimum'], c['maximum'], c['value']) for c in sliders] == [(.5, 2., 1.), (0., 2., 1.)]
+        assert [(c['minimum'], c['maximum'], c['value']) for c in sliders] == [(.5, 5., 1.), (0., 5., 1.)]
         assert app.config['title'] == 'Voltage control for ADG'
         gains=[c['props'] for c in app.config['components'] if c['type']=='number']
         assert [g['info'] for g in gains]==['Higher: use less ΔP','Higher: use less ΔQ','Higher: stronger voltage correction']
-        print('No-login Gradio, original slider ranges, new synthetic scenarios and three overlaid controls: PASS')
+        print('No-login Gradio, extended 5x slider ranges, new synthetic scenarios and three overlaid controls: PASS')
         if os.getenv('GRID_LAB_BROWSER_CHECK') == '1':
             from check_browser import check_browser
             check_browser(url)
