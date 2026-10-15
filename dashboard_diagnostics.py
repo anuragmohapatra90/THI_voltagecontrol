@@ -42,7 +42,7 @@ def cost_function_html(v_min, v_max):
 </section>'''
 
 
-def diagnostics_html(frame, lab):
+def diagnostics_html(frame, lab, mode='local'):
     flags = frame['at_limit'].set_index('Bus')
     action_rows = []
     for _, row in frame['actions'].iterrows():
@@ -58,19 +58,23 @@ def diagnostics_html(frame, lab):
     capacity = (f'<div class="capacity at-limit" role="status">LIMIT REACHED · {count}/6 commands at ±50</div>'
                 if count else '<div class="capacity available" role="status">Capacity available · no command at limit</div>')
     voltage_rows = []
-    for _, row in frame['voltage_estimates'].iterrows():
+    informed=mode=='mlp'
+    estimates=frame['informed_voltage_estimates'] if informed else frame['voltage_estimates']
+    heading='Tap-aware MLP estimate vs actual' if informed else 'MLP estimate vs actual'
+    note='At applied OLTC tap · error = estimate − actual · pu' if informed else 'After MPC · error = estimate − actual · pu'
+    for _, row in estimates.iterrows():
         b = int(row['Bus'])
         values = [float(row[k]) for k in ['Estimate (pu)', 'Actual (pu)', 'Error (pu)']]
         voltage_rows.append(f'<tr data-bus="{b}"><th scope="row">{b}</th><td>{values[0]:.5f}</td>'
                             f'<td>{values[1]:.5f}</td><td>{values[2]:+.5f}</td></tr>')
-    return f'''<div class="diagnostic-layout" data-scenario-id="{int(frame['scenario_id'])}">
-<section class="action-section"><h3>Controller changes · ΔP / ΔQ</h3>
+    return f'''<div class="diagnostic-layout" data-scenario-id="{int(frame['scenario_id'])}" data-oltc-mode="{mode}">
+<section class="action-section"><h3>MLP+MPC changes · ΔP / ΔQ</h3>
 <div class="diagnostic-note">+ inject / − absorb · relative to uncontrolled</div>
 <table class="action-table" aria-label="Applied controller power increments"><thead><tr>
 <th scope="col">Bus</th><th scope="col">ΔP (kW)</th><th scope="col">ΔQ (kVar)</th></tr></thead>
 <tbody>{''.join(action_rows)}</tbody></table>{capacity}</section>
-<section class="voltage-section"><h3>MLP estimate vs actual</h3>
-<div class="diagnostic-note">After MPC · error = estimate − actual · pu</div>
+<section class="voltage-section"><h3>{heading}</h3>
+<div class="diagnostic-note">{note}</div>
 <div class="voltage-scroll"><table class="voltage-table" aria-label="Per-bus MLP and actual AC voltages">
 <thead><tr><th scope="col">Bus</th><th scope="col">Estimate</th><th scope="col">Actual</th><th scope="col">Error</th></tr></thead>
 <tbody>{''.join(voltage_rows)}</tbody></table></div></section>

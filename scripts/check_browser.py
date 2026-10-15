@@ -36,6 +36,7 @@ def check_browser(url):
         page.wait_for_function('''() => {
             const gd=document.querySelector('#comparison .js-plotly-plot');
             return gd?.data?.[0]?.name==='Uncontrolled' && gd.data[2]?.name==='MLP + MPC'
+                && document.querySelector('#comparison-mlp .js-plotly-plot')?.data?.[2]?.name==='MLP + MPC'
                 && document.querySelectorAll('.voltage-table tbody tr').length===15;
         }''', timeout=60000)
         assert page.get_by_role('button', name='Load new scenario', exact=True).count() == 1
@@ -78,49 +79,63 @@ def check_browser(url):
         screenshot_log(page)
         print('Chromium feeder-head hover: both gross load and PV are visible at the mixed site: PASS')
         page.mouse.move(5,5)
-        for width, height in [(1440,900), (1366,768), (1280,720), (1280,650)]:
-            page.set_viewport_size({'width':width, 'height':height})
-            page.wait_for_function('''() => {
-                const host=document.getElementById('comparison');const gd=host.querySelector('.js-plotly-plot');
-                const box=host.getBoundingClientRect();const expected=innerHeight-box.top-12;
-                const diagnostics=document.querySelector('.diagnostic-layout');
-                return Math.abs(gd.layout.height-expected)<2 && Math.abs(box.height-expected)<2
-                    && diagnostics && Math.abs(diagnostics.getBoundingClientRect().height-(expected-18))<2;
-            }''')
-            result = page.evaluate('''() => {
-                const controls=document.getElementById('controls').getBoundingClientRect();
-                const graph=document.getElementById('comparison').getBoundingClientRect();
-                const diagnostics=document.getElementById('diagnostics-panel').getBoundingClientRect();
-                const gd=document.querySelector('#comparison .js-plotly-plot');
-                const inputs=[...document.querySelectorAll('#controls input,#controls button,#controls .prose')];
-                const table=document.querySelector('.voltage-table');const viewport=table.parentElement.getBoundingClientRect();
-                const last=table.querySelector('tbody tr:last-child').getBoundingClientRect();
-                return {scroll:document.documentElement.scrollHeight,body:document.body.scrollHeight,
-                    controlsBottom:controls.bottom,graphBottom:graph.bottom,diagnosticsBottom:diagnostics.bottom,
-                    right:graph.x>=controls.right && diagnostics.x>=graph.right,
-                    inputsFit:inputs.every(e=>e.getBoundingClientRect().bottom<=innerHeight),
-                    svgHeight:gd._fullLayout.height,hostHeight:graph.height,
-                    lastBusVisible:last.bottom<=viewport.bottom+1,
-                    costVisible:document.querySelector('.cost-function').getBoundingClientRect().bottom<=innerHeight,
-                    horizontalFit:document.querySelector('.diagnostic-layout').scrollWidth<=diagnostics.width,
-                    markersClear:[...gd.querySelectorAll('.scatterlayer .points path.point')].every(point=>{
-                        const marker=point.getBoundingClientRect();
-                        return [...gd.querySelectorAll('.colorbar .cbfill')].every(fill=>{
-                            const bar=fill.getBoundingClientRect();
-                            return marker.right<=bar.left || marker.left>=bar.right || marker.bottom<=bar.top || marker.top>=bar.bottom;
-                        });
-                    })};
-            }''')
-            screenshot_log(page) if height == 650 else None
-            assert result['scroll'] <= height+1 and result['body'] <= height+1, result
-            assert result['right'] and result['inputsFit'], result
-            assert max(result['controlsBottom'],result['graphBottom'],result['diagnosticsBottom']) <= height+1, result
-            assert abs(result['svgHeight']-result['hostHeight']) < 2, result
-            assert result['lastBusVisible'] and result['costVisible'] and result['horizontalFit'], result
-            assert result['markersClear'], result
-            print(f'Chromium {width}x{height}: full comparison, all 15 bus estimates and cost function, no page scroll: PASS')
+        original_id=page.locator('.diagnostic-layout').get_attribute('data-scenario-id')
+        original_mpc=page.evaluate("document.querySelector('#comparison .js-plotly-plot').data[2].y")
+        for mode,label,host_id in [('local','Local OLTC','comparison'),('mlp','MLP-informed OLTC','comparison-mlp')]:
+            page.get_by_role('tab',name=label,exact=True).click()
+            page.wait_for_function("mode => document.querySelector('.diagnostic-layout').dataset.oltcMode===mode",arg=mode)
+            page.evaluate('id => {window.activeComparison=id}',host_id)
+            assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id')==original_id
+            assert page.evaluate("document.querySelector('#comparison-mlp .js-plotly-plot').data[2].y")==original_mpc
+            if mode=='mlp':
+                assert 'At applied OLTC tap' in page.locator('.voltage-section').inner_text()
+                assert 'Tap-aware MLP estimate vs actual' in page.locator('.voltage-section').inner_text()
+            for width, height in [(1440,900), (1366,768), (1280,720), (1280,650)]:
+                page.set_viewport_size({'width':width, 'height':height})
+                page.wait_for_function('''() => {
+                    const host=document.getElementById(window.activeComparison);const gd=host.querySelector('.js-plotly-plot');
+                    const box=host.getBoundingClientRect();const expected=innerHeight-box.top-12;
+                    const diagnostics=document.querySelector('.diagnostic-layout');
+                    return Math.abs(gd.layout.height-expected)<2 && Math.abs(box.height-expected)<2
+                        && diagnostics && Math.abs(diagnostics.getBoundingClientRect().height-(innerHeight-document.getElementById('diagnostics-panel').getBoundingClientRect().top-30))<2;
+                }''')
+                result = page.evaluate('''() => {
+                    const controls=document.getElementById('controls').getBoundingClientRect();
+                    const graph=document.getElementById(window.activeComparison).getBoundingClientRect();
+                    const diagnostics=document.getElementById('diagnostics-panel').getBoundingClientRect();
+                    const gd=document.querySelector('#'+window.activeComparison+' .js-plotly-plot');
+                    const inputs=[...document.querySelectorAll('#controls input,#controls button,#controls .prose')];
+                    const table=document.querySelector('.voltage-table');const viewport=table.parentElement.getBoundingClientRect();
+                    const last=table.querySelector('tbody tr:last-child').getBoundingClientRect();
+                    return {scroll:document.documentElement.scrollHeight,body:document.body.scrollHeight,
+                        controlsBottom:controls.bottom,graphBottom:graph.bottom,diagnosticsBottom:diagnostics.bottom,
+                        right:graph.x>=controls.right && diagnostics.x>=graph.right,
+                        inputsFit:inputs.every(e=>e.getBoundingClientRect().bottom<=innerHeight),
+                        svgHeight:gd._fullLayout.height,hostHeight:graph.height,
+                        lastBusVisible:last.bottom<=viewport.bottom+1,
+                        costVisible:document.querySelector('.cost-function').getBoundingClientRect().bottom<=innerHeight,
+                        horizontalFit:document.querySelector('.diagnostic-layout').scrollWidth<=diagnostics.width,
+                        markersClear:[...gd.querySelectorAll('.scatterlayer .points path.point')].every(point=>{
+                            const marker=point.getBoundingClientRect();
+                            return [...gd.querySelectorAll('.colorbar .cbfill')].every(fill=>{
+                                const bar=fill.getBoundingClientRect();
+                                return marker.right<=bar.left || marker.left>=bar.right || marker.bottom<=bar.top || marker.top>=bar.bottom;
+                            });
+                        })};
+                }''')
+                screenshot_log(page) if height == 650 else None
+                assert result['scroll'] <= height+1 and result['body'] <= height+1, result
+                assert result['right'] and result['inputsFit'], result
+                assert max(result['controlsBottom'],result['graphBottom'],result['diagnosticsBottom']) <= height+1, result
+                assert abs(result['svgHeight']-result['hostHeight']) < 2, result
+                assert result['lastBusVisible'] and result['costVisible'] and result['horizontalFit'], result
+                assert result['markersClear'], result
+                print(f'Chromium {mode} {width}x{height}: full comparison, all 15 bus estimates and cost function, no page scroll: PASS')
+        # Switching views never samples another scenario or changes shared MPC results.
+        print('Chromium tab switch: same scenario and MPC, selected OLTC estimates/actual/errors: PASS')
         page.evaluate("document.documentElement.classList.add('dark');document.body.classList.add('dark')")
         check_contrast(page, 'dark mode')
+        assert page.get_by_role('tab',name='MLP-informed OLTC',exact=True).get_attribute('aria-selected')=='true'
         screenshot_log(page)
         # Both deterministic draws fail AC at 5x load / zero PV, not an injected exception.
         page.locator('#pv-scale input[type="range"]').press('Home')
@@ -174,6 +189,8 @@ def check_browser(url):
         page.wait_for_function('''() => document.getElementById('new-scenario').disabled
             && document.getElementById('new-scenario').dataset.busy==='true'
             && document.getElementById('comparison').getAttribute('aria-busy')==='true'
+            && document.getElementById('comparison-mlp').getAttribute('aria-busy')==='true'
+            && document.getElementById('controller-tabs').inert
             && document.getElementById('scenario-feedback').dataset.busy==='true'
             && getComputedStyle(document.getElementById('scenario-feedback'),'::after').content.includes('Solving')''', timeout=1000)
         assert page.locator('.diagnostic-layout').get_attribute('data-scenario-id') == previous
@@ -196,5 +213,7 @@ def check_browser(url):
                 && document.getElementById('comparison').getAttribute('aria-busy')==='false';
         }''', arg=previous, timeout=30000)
         assert page.locator('.voltage-table tbody tr').count() == 15
+        assert page.locator('.diagnostic-layout').get_attribute('data-oltc-mode')=='mlp'
+        assert page.evaluate("document.querySelector('#comparison-mlp .js-plotly-plot').layout.meta.scenario_id===document.querySelector('#comparison .js-plotly-plot').layout.meta.scenario_id")
         print('Chromium delayed backend: immediate loading label/spinner, disabled duplicate clicks, atomic diagnostics and restored button: PASS')
         browser.close()

@@ -11,6 +11,7 @@ from pandapower import LoadflowNotConverged
 from grid_lab import GridLab
 from active_grid import config
 from active_grid.local_oltc import settle_oltc
+from active_grid.informed_oltc import informed_oltc,prepare_tap_estimator
 from live_control import prepare_controller,voltage_violation
 from dashboard_diagnostics import control_deltas,voltage_diagnostics,diagnostics_html
 from dashboard_assets import CSS,LAYOUT_JS,BEGIN_SCENARIO_JS,END_SCENARIO_JS
@@ -25,6 +26,7 @@ class ScenarioExperiment:
     rng: object = field(default_factory=np.random.default_rng)
     scenario_id: int = 0
     tap_pos: int = 0
+    informed_tap_pos: int = 0
     base: dict = field(default_factory=dict)
     last: dict = field(default_factory=dict)
 
@@ -44,6 +46,8 @@ class ScenarioExperiment:
         lab.set_snapshot(baseline,self.base,lf,pf)
         y_base=lab.solve(baseline)
         oltc,y_oltc,tap,oltc_flags=settle_oltc(lab,baseline,self.tap_pos)
+        informed,y_informed,informed_tap,informed_flags=informed_oltc(lab,baseline,self.informed_tap_pos)
+        informed_estimates=voltage_diagnostics(informed_flags["predicted_voltages"],informed,range(config.BUS_COUNT))
         mpc=deepcopy(baseline)
         y_mpc,p_set,q_set,flags=controller.run_snapshot(lab,mpc,weights)
         actions,at_limit=control_deltas(baseline,mpc,controller.der_buses)
@@ -51,6 +55,8 @@ class ScenarioExperiment:
         self.last={'scenario_id':self.scenario_id,'scenario_seed':self.base['seed'],
             'hour':self.base['hour'],'baseline':baseline,'oltc':oltc,'mpc':mpc,
             'y_base':y_base,'y_oltc':y_oltc,'y_mpc':y_mpc,'tap_pos':tap,'oltc_flags':oltc_flags,
+            'informed_oltc':informed,'y_informed_oltc':y_informed,'informed_tap_pos':informed_tap,
+            'informed_flags':informed_flags,'informed_voltage_estimates':informed_estimates,
             'actions':actions,'at_limit':at_limit,'voltage_estimates':estimates,'flags':flags,'load_factor':float(lf),'pv_factor':float(pf),
             'gross_load_p_kw':float(self.base['load_p'].sum()*lf*1000),
             'load_q_kvar':float(self.base['load_q'].sum()*lf*1000),
@@ -60,6 +66,7 @@ class ScenarioExperiment:
             'load_bus_kw':{int(b):float(self.base['load_p'][b]*lf*1000) for b in lab.net.bus.index},
             'pv_bus_kw':{int(b):float(self.base['pv'][b]*pf*1000) for b in lab.net.bus.index}}
         self.tap_pos=tap
+        self.informed_tap_pos=informed_tap
         return self.last
 
 
@@ -119,12 +126,16 @@ def add_heatmap(fig,net,positions,column,frame,is_mpc=False):
     fig.update_yaxes(visible=False,range=[min(levels)-3,max(levels)+.8],row=2,col=column)
 
 
-def comparison_plot(frame,lab):
+def comparison_plot(frame,lab,mode='local'):
+    informed=mode=='mlp'
+    if informed:
+        frame={**frame,'oltc':frame['informed_oltc'],'tap_pos':frame['informed_tap_pos']}
+    oltc_name='MLP-informed OLTC' if informed else 'Local OLTC'
     """Three voltage traces overlaid, then three maps on a shared color scale."""
     fig=make_subplots(rows=2,cols=3,specs=[[{'colspan':3},None,None],[{},{},{}]],
         column_widths=[1/3]*3,row_heights=[.52,.48],vertical_spacing=.17,horizontal_spacing=.05,
         subplot_titles=['Voltage Profiles · Feeder Order','Uncontrolled',
-                        f'Local OLTC · Tap {frame["tap_pos"]:+d}','MLP + MPC'])
+                        f'{oltc_name} · Tap {frame["tap_pos"]:+d}','MLP + MPC'])
     paths=[[0,1,*range(2,9)],[1,*range(9,15)]]
     bus=[]
     for path in paths:bus.extend(path+[None])
@@ -143,6 +154,9 @@ def comparison_plot(frame,lab):
             'step limit':'Step limit reached'}.get(relay['reason'],relay['reason'])
     relay_hover=(f'<br>OLTC: {escape(decision)}'
         f'<br>V₁ {relay["secondary_voltage_pu"]:.4f} pu · local band {lo:.2f}–{hi:.2f} pu')
+    if informed:
+        relay_hover=(f'<br>MLP-informed OLTC: {escape(frame["informed_flags"]["reason"])}'
+            '<br>Trigger: estimated feeder voltage outside 0.95–1.05 pu')
     voltage_hover=('<b>Bus %{customdata[0]}</b> · actual AC voltage<br>'
         'Uncontrolled: %{customdata[1]:.5f} pu<br>'
         'OLTC: %{customdata[2]:.5f} pu<br>'
@@ -175,7 +189,7 @@ def comparison_plot(frame,lab):
         coloraxis={'colorscale':'RdBu','cmin':.90,'cmax':1.10,
             'colorbar':{'title':'V (pu)','orientation':'h','x':.5,'y':-.04,'len':.5,'thickness':10}},
         hovermode='closest',uirevision='grid-comparison',meta={'scenario_id':frame['scenario_id'],'scenario_seed':frame['scenario_seed'],
-            'load_factor':frame['load_factor'],'pv_factor':frame['pv_factor']})
+            'load_factor':frame['load_factor'],'pv_factor':frame['pv_factor'],'oltc_mode':mode})
     fig.update_annotations(font_size=11)
     return fig
 
@@ -188,10 +202,33 @@ def feedback_html(message='Ready', *, error=False):
 
 def _failed_snapshot(session,message):
     # A recoverable solve error is a completed UI response, with no partial results.
-    return session,gr.skip(),gr.skip(),gr.skip(),gr.skip(),feedback_html(message,error=True)
+    return session,gr.skip(),gr.skip(),gr.skip(),gr.skip(),gr.skip(),feedback_html(message,error=True)
 
 
-def _evaluate_configuration(lf,pf,wp,wq,wv,session,*,resample=False):
+def status_markdown(frame,lab,mode='local'):
+    safe='within limits' if voltage_violation(lab,frame['y_mpc'])<=1e-7 else 'outside limits'
+    if mode=='mlp':
+        flags=frame['informed_flags']
+        limit=' · tap limit' if flags['at_limit'] else ''
+        return (f'**OLTC tap position: {frame["informed_tap_pos"]:+d}** · ±5%  \n'
+            f'MLP: {flags["reason"]}{limit} · MPC {safe}')
+    return (f'**OLTC tap position: {frame["tap_pos"]:+d}** · ±5%  \n'
+        f'V₁ {frame["oltc_flags"]["secondary_voltage_pu"]:.4f} pu · MPC {safe}')
+
+
+def select_mode(session,mode):
+    # Tab changes are a view change: no new scenario, training, solve or tap reset.
+    if not session.last:return mode,gr.skip(),gr.skip()
+    return mode,diagnostics_html(session.last,session.lab,mode),status_markdown(session.last,session.lab,mode)
+
+
+def show_local(session):return select_mode(session,'local')
+
+
+def show_informed(session):return select_mode(session,'mlp')
+
+
+def _evaluate_configuration(lf,pf,wp,wq,wv,session,mode='local',*,resample=False):
     # RNG advances on a failed draw; displayed scenario and results commit only on success.
     candidate=copy(session)
     try:
@@ -199,11 +236,11 @@ def _evaluate_configuration(lf,pf,wp,wq,wv,session,*,resample=False):
         frame=candidate.sample(lf,pf,(wp,wq,wv))
         minutes=int(frame['hour']*60)
         caption=f"**Scenario {frame['scenario_id']} · {minutes//60:02d}:{minutes%60:02d}**  \nSynthetic daily profile"
-        safe='within limits' if voltage_violation(candidate.lab,frame['y_mpc'])<=1e-7 else 'outside limits'
-        status=f'**OLTC tap position: {frame["tap_pos"]:+d}** · ±5%  \nV₁ {frame["oltc_flags"]["secondary_voltage_pu"]:.4f} pu · MPC {safe}'
+        status=status_markdown(frame,candidate.lab,mode)
         plot=comparison_plot(frame,candidate.lab)
-        diagnostics=diagnostics_html(frame,candidate.lab)
-        return candidate,plot,diagnostics,caption,status,feedback_html()
+        informed_plot=comparison_plot(frame,candidate.lab,'mlp')
+        diagnostics=diagnostics_html(frame,candidate.lab,mode)
+        return candidate,plot,informed_plot,diagnostics,caption,status,feedback_html()
     except LoadflowNotConverged:
         return _failed_snapshot(session,f'Power flow failed (load ×{float(lf):g}, PV ×{float(pf):g}). '
             'Previous result kept. Reduce scales or load another scenario.')
@@ -211,20 +248,22 @@ def _evaluate_configuration(lf,pf,wp,wq,wv,session,*,resample=False):
         return _failed_snapshot(session,f'Simulation failed: {exc}. Previous result kept.')
 
 
-def update_configuration(lf,pf,wp,wq,wv,session):
-    return _evaluate_configuration(lf,pf,wp,wq,wv,session)
+def update_configuration(lf,pf,wp,wq,wv,session,mode='local'):
+    return _evaluate_configuration(lf,pf,wp,wq,wv,session,mode)
 
 
-def new_scenario(lf,pf,wp,wq,wv,session):
-    return _evaluate_configuration(lf,pf,wp,wq,wv,session,resample=True)
+def new_scenario(lf,pf,wp,wq,wv,session,mode='local'):
+    return _evaluate_configuration(lf,pf,wp,wq,wv,session,mode,resample=True)
 
 
 def build_dashboard(lab=None, *, scenario_seed=None):
     seed=lab or GridLab()
     if getattr(seed,'voltage_controller',None) is None:
         print('Preparing ADG MLP + MPC controller…',flush=True);prepare_controller(seed);print('MLP ready.',flush=True)
+    prepare_tap_estimator(seed)
     with gr.Blocks(title='Voltage control for ADG',analytics_enabled=False,fill_height=True) as app:
         state=gr.State(value=lambda:ScenarioExperiment(deepcopy(seed),rng=np.random.default_rng(scenario_seed)))
+        active_mode=gr.State('local')
         gr.Markdown('# Voltage control for ADG',elem_id='title')
         with gr.Row(elem_id='workspace'):
             with gr.Column(elem_id='controls'):
@@ -241,11 +280,18 @@ def build_dashboard(lab=None, *, scenario_seed=None):
                     wv=gr.Number(1000.,minimum=0,label='kV · voltage',info='Higher: stronger voltage correction',step=100.,min_width=65,elem_id='gain-v')
                 status=gr.Markdown('')
                 feedback=gr.HTML(feedback_html(),elem_id='feedback-host')
-            graph=gr.Plot(show_label=False,elem_id='comparison')
+            with gr.Column(elem_id='comparison-column'):
+                with gr.Tabs(elem_id='controller-tabs'):
+                    with gr.Tab('Local OLTC',id='local') as local_tab:
+                        graph=gr.Plot(show_label=False,elem_id='comparison',elem_classes='comparison-plot')
+                    with gr.Tab('MLP-informed OLTC',id='mlp') as informed_tab:
+                        informed_graph=gr.Plot(show_label=False,elem_id='comparison-mlp',elem_classes='comparison-plot')
             with gr.Column(elem_id='diagnostics-panel'):
                 diagnostics=gr.HTML('',elem_id='diagnostics')
-        inputs=[lf,pf,wp,wq,wv,state];outputs=[state,graph,diagnostics,timestamp,status,feedback]
+        inputs=[lf,pf,wp,wq,wv,state,active_mode];outputs=[state,graph,informed_graph,diagnostics,timestamp,status,feedback]
         common={'concurrency_limit':1,'concurrency_id':'scenario_grid','show_progress':'hidden'}
+        local_tab.select(show_local,[state],[active_mode,diagnostics,status],api_name=False,**common)
+        informed_tab.select(show_informed,[state],[active_mode,diagnostics,status],api_name=False,**common)
         gr.on([lf.input,pf.input,wp.change,wq.change,wv.change],update_configuration,inputs,outputs,
             api_name='react',trigger_mode='always_last',**common)
         load.click(None,[],[],js=BEGIN_SCENARIO_JS,queue=False,api_name=False).then(
